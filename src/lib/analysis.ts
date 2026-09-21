@@ -1,7 +1,7 @@
 import type { BestLine, GameAnalysis, GameRecord, PlyAnalysis } from '../types';
 import { EnginePool, getEnginePool, isMateScore } from './engine';
-import { ANALYSIS_SCHEMA, classifyMove, moveAccuracy } from './classify';
-import { parseHeaders, parseMovetext } from './pgn';
+import { ANALYSIS_SCHEMA, calculateGameAccuracy, chesscomToLichess, classifyMove, estimateElo, lichessToChesscom, moveAccuracy } from './classify';
+import { getGameRatings, parseHeaders, parseMovetext } from './pgn';
 import { replayGame, uciToSan } from './position';
 
 export interface AnalysisProgress {
@@ -183,8 +183,7 @@ function buildAnalysis(
   opts: AnalyzeOptions
 ): GameAnalysis {
   const plyAnalyses: PlyAnalysis[] = [];
-  let accSum = 0;
-  let accCount = 0;
+  const playerMoves: import('./classify').PlayerMoveEval[] = [];
   let mistakeCount = 0;
 
   for (let i = 0; i < g.plies.length; i++) {
@@ -228,8 +227,7 @@ function buildAnalysis(
         best: evalHere.lines,
       };
       if (isPlayer && !evalFailedHere) {
-        accSum += moveAccuracy(evalBefore, evalAfterPlayer, ply.color);
-        accCount++;
+        playerMoves.push({ evalBefore, evalAfterPlayer, color: ply.color });
         if (!playedIsBest && cpl >= opts.minCpl) {
           const cls = classifyMove({
             fenBefore: ply.fenBefore,
@@ -254,6 +252,15 @@ function buildAnalysis(
   }
 
   const partial = plyAnalyses.some(p => p.evalFailed);
+  const accuracy = calculateGameAccuracy(playerMoves);
+  const ratings = getGameRatings(g.game);
+  const estimatedElo = estimateElo(accuracy, {
+    site: g.game.site,
+    timeClass: g.game.timeClass,
+    playerRating: ratings.playerRating,
+    opponentRating: ratings.opponentRating,
+    moveCount: playerMoves.length,
+  });
   return {
     key: `${g.game.key}|${engineKey}`,
     gameKey: g.game.key,
@@ -262,7 +269,8 @@ function buildAnalysis(
     depth: opts.depth,
     mpv: opts.mpv,
     playerColor: g.game.playerColor,
-    accuracy: accCount > 0 ? Math.round((accSum / accCount) * 10) / 10 : 0,
+    accuracy,
+    estimatedElo,
     plies: plyAnalyses,
     mistakeCount,
     partial,
@@ -290,3 +298,134 @@ export function formatEval(cp: number, colorOfView: 'w' | 'b'): string {
   }
   return `${whiteCp >= 0 ? '+' : ''}${(whiteCp / 100).toFixed(2)}`;
 }
+
+export { chesscomToLichess, estimateElo, lichessToChesscom } from './classify';
+
+/**
+ * Estimate player performance rating (Elo) for a specific game and analysis.
+ * Incorporates game platform, match player/opponent rating metadata, and move count.
+ */
+export function estimateGameElo(
+  game: GameRecord,
+  analysis: GameAnalysis,
+  fallbackBaseline?: number
+): number {
+  const ratings = getGameRatings(game);
+  return estimateElo(analysis.accuracy, {
+    site: game.site,
+    timeClass: game.timeClass,
+    playerRating: ratings.playerRating,
+    opponentRating: ratings.opponentRating,
+    moveCount: (analysis.plies?.length ?? 40) / 2,
+    fallbackBaseline,
+  });
+}
+
+export interface SiteStats {
+  games: number;
+  avgAccuracy: number;
+  avgRating: number;
+}
+
+export interface ReviewStats {
+  totalGames: number;
+  analyzedGames: number;
+  avgAccuracy: number;
+  avgRating: number;
+  bySite: Partial<Record<import('../types').Site, SiteStats>>;
+  ratingDisplay: string;
+}
+
+/**
+ * Compute aggregate summary statistics for games in the review view.
+ * Keeps business logic centralized outside presentational UI.
+ * Distinct platforms (Lichess vs Chess.com) maintain separate rating averages.
+ */
+export function computeReviewStats(rows: { game: GameRecord; analysis?: GameAnalysis }[]): ReviewStats {
+  const siteRatingSums: Record<string, { sum: number; count: number }> = {};
+  let totalRatingSum = 0;
+  let totalRatingCount = 0;
+
+  for (const { game } of rows) {
+    const { playerRating } = getGameRatings(game);
+    if (playerRating) {
+      siteRatingSums[game.site] = siteRatingSums[game.site] ?? { sum: 0, count: 0 };
+      siteRatingSums[game.site].sum += playerRating;
+      siteRatingSums[game.site].count++;
+      totalRatingSum += playerRating;
+      totalRatingCount++;
+    }
+  }
+
+  const overallBaseline = totalRatingCount > 0 ? Math.round(totalRatingSum / totalRatingCount) : undefined;
+  const siteBaselines: Record<string, number | undefined> = {};
+  for (const [site, entry] of Object.entries(siteRatingSums)) {
+    siteBaselines[site] = Math.round(entry.sum / entry.count);
+  }
+
+  let analyzedGames = 0;
+  let accSum = 0;
+  let ratingSum = 0;
+  const siteAccum: Record<string, { games: number; accSum: number; ratingSum: number }> = {};
+
+  for (const { game, analysis } of rows) {
+    if (!analysis) continue;
+    analyzedGames++;
+    accSum += analysis.accuracy;
+
+    const fallback = siteBaselines[game.site] ?? overallBaseline;
+    const elo = estimateGameElo(game, analysis, fallback);
+    ratingSum += elo;
+
+    const s = siteAccum[game.site] ?? { games: 0, accSum: 0, ratingSum: 0 };
+    s.games++;
+    s.accSum += analysis.accuracy;
+    s.ratingSum += elo;
+    siteAccum[game.site] = s;
+  }
+
+  const bySite: Partial<Record<import('../types').Site, SiteStats>> = {};
+  for (const [site, s] of Object.entries(siteAccum)) {
+    if (s.games > 0) {
+      bySite[site as import('../types').Site] = {
+        games: s.games,
+        avgAccuracy: Math.round((s.accSum / s.games) * 10) / 10,
+        avgRating: Math.round(s.ratingSum / s.games),
+      };
+    }
+  }
+
+  const activeSites = Object.entries(bySite).filter(([_, s]) => s && s.games > 0);
+  let ratingDisplay = '—';
+  let avgRating = 0;
+
+  if (activeSites.length === 1) {
+    avgRating = activeSites[0][1]!.avgRating;
+    ratingDisplay = String(avgRating);
+  } else if (activeSites.length > 1) {
+    ratingDisplay = activeSites
+      .map(([site, s]) => `${site === 'lichess' ? 'Lichess' : site === 'chesscom' ? 'Chess.com' : 'Import'}: ${s!.avgRating}`)
+      .join(' · ');
+    // When multiple platforms are present, normalize Chess.com to Lichess equivalent before averaging
+    // so the blended number is mathematically consistent instead of combining incompatible pools
+    let normalizedSum = 0;
+    for (const { game, analysis } of rows) {
+      if (!analysis) continue;
+      const elo = estimateGameElo(game, analysis, siteBaselines[game.site]);
+      const normalized = game.site === 'chesscom' ? chesscomToLichess(elo, game.timeClass) : elo;
+      normalizedSum += normalized;
+    }
+    avgRating = analyzedGames > 0 ? Math.round(normalizedSum / analyzedGames) : 0;
+  }
+
+  return {
+    totalGames: rows.length,
+    analyzedGames,
+    avgAccuracy: analyzedGames > 0 ? Math.round((accSum / analyzedGames) * 10) / 10 : 0,
+    avgRating,
+    bySite,
+    ratingDisplay,
+  };
+}
+
+

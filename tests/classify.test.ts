@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { moveAccuracy, classifyMove, reclassifyAnalysis, ANALYSIS_SCHEMA } from '../src/lib/classify';
+import {
+  moveAccuracy,
+  calculateGameAccuracy,
+  classifyMove,
+  reclassifyAnalysis,
+  ANALYSIS_SCHEMA,
+  chesscomToLichess,
+  estimateElo,
+  EXPECTED_ACCURACY_BY_RATING,
+  expectedAccuracyForRating,
+  lichessToChesscom,
+  ratingForAccuracy,
+} from '../src/lib/classify';
 import { encodeScore, isMateScore, MATE_BASE } from '../src/lib/engine';
 import type { GameAnalysis } from '../src/types';
 
@@ -33,6 +45,118 @@ describe('moveAccuracy', () => {
   it('clamps perfect and catastrophic moves', () => {
     expect(moveAccuracy(0, 0, 'w')).toBeGreaterThan(99);
     expect(moveAccuracy(100, -900, 'b')).toBeLessThan(10);
+  });
+});
+
+describe('calculateGameAccuracy', () => {
+  it('returns 100% for all-perfect moves', () => {
+    const moves = Array.from({ length: 15 }, () => ({
+      evalBefore: 30,
+      evalAfterPlayer: 30,
+      color: 'w' as const,
+    }));
+    expect(calculateGameAccuracy(moves)).toBe(100);
+  });
+
+  it('properly penalizes blunders via harmonic weighting instead of inflating like an arithmetic mean', () => {
+    // 20 moves: 14 good moves (eval 0 -> 0), 2 inaccuracies (eval 0 -> -60), 2 mistakes (eval 0 -> -200), 2 blunders (eval 0 -> -600)
+    const moves: { evalBefore: number; evalAfterPlayer: number; color: 'w' | 'b' }[] = [
+      ...Array.from({ length: 14 }, () => ({ evalBefore: 0, evalAfterPlayer: 0, color: 'w' as const })),
+      ...Array.from({ length: 2 }, () => ({ evalBefore: 0, evalAfterPlayer: -60, color: 'w' as const })),
+      ...Array.from({ length: 2 }, () => ({ evalBefore: 0, evalAfterPlayer: -200, color: 'w' as const })),
+      ...Array.from({ length: 2 }, () => ({ evalBefore: 0, evalAfterPlayer: -600, color: 'w' as const })),
+    ];
+
+    // Under simple arithmetic mean, 14 perfect moves would mask the 4 blunders/mistakes, yielding ~84%
+    const individualAccuracies = moves.map(m => moveAccuracy(m.evalBefore, m.evalAfterPlayer, m.color));
+    const arithmeticMean = individualAccuracies.reduce((a, b) => a + b, 0) / moves.length;
+    expect(arithmeticMean).toBeGreaterThan(80);
+
+    // Under official Lichess harmonic & volatility-weighted game accuracy, it is properly dragged down
+    const gameAcc = calculateGameAccuracy(moves);
+    expect(gameAcc).toBeLessThan(75);
+    expect(gameAcc).toBeGreaterThan(50);
+  });
+});
+
+describe('platform rating conversions', () => {
+  it('converts Chess.com Rapid ratings to Lichess Rapid ratings based on empirical curves', () => {
+    // 500 Chess.com Rapid maps to 820 Lichess Rapid
+    expect(chesscomToLichess(500, 'rapid')).toBe(820);
+    // 1000 Chess.com Rapid maps to 1280 Lichess Rapid
+    expect(chesscomToLichess(1000, 'rapid')).toBe(1280);
+    // 2000 Chess.com Rapid maps to 2175 Lichess Rapid
+    expect(chesscomToLichess(2000, 'rapid')).toBe(2175);
+    // Master ratings converge
+    expect(chesscomToLichess(2800, 'rapid')).toBe(2800);
+  });
+
+  it('converts Chess.com Blitz ratings to Lichess Blitz ratings', () => {
+    // 500 Chess.com Blitz maps to ~980 Lichess Blitz
+    expect(chesscomToLichess(500, 'blitz')).toBe(980);
+    expect(chesscomToLichess(1000, 'blitz')).toBe(1420);
+  });
+
+  it('converts Lichess ratings to Chess.com ratings inversely', () => {
+    expect(lichessToChesscom(820, 'rapid')).toBe(500);
+    expect(lichessToChesscom(1280, 'rapid')).toBe(1000);
+    expect(lichessToChesscom(980, 'blitz')).toBe(500);
+  });
+});
+
+describe('estimateElo', () => {
+  it('evaluates match performance relative to player rating on Lichess in Rapid (~1050)', () => {
+    // Expected accuracy for ~1050 on Lichess Rapid is 67%
+    const expected = expectedAccuracyForRating(1050, 'lichess', 'rapid');
+    expect(expected).toBe(67);
+
+    // Normal game: played at expected accuracy -> rating stays at ~1050
+    const normal = estimateElo(67, { site: 'lichess', timeClass: 'rapid', playerRating: 1050, moveCount: 20 });
+    expect(normal).toBe(1050);
+
+    // Strong game (+10% accuracy above expected: 77%) -> performance is ~1300
+    const strong = estimateElo(77, { site: 'lichess', timeClass: 'rapid', playerRating: 1050, moveCount: 20 });
+    expect(strong).toBe(1300);
+  });
+
+  it('evaluates match performance relative to player rating on Chess.com in Rapid (~500)', () => {
+    // Expected accuracy for ~500 on Chess.com Rapid is 60%
+    const expected = expectedAccuracyForRating(500, 'chesscom', 'rapid');
+    expect(expected).toBe(60);
+
+    // Normal game: played at expected accuracy -> rating stays at ~500
+    const normal = estimateElo(60, { site: 'chesscom', timeClass: 'rapid', playerRating: 500, moveCount: 20 });
+    expect(normal).toBe(500);
+
+    // Great game for a 500 (+12% accuracy: 72%) -> performance ~800, NOT inflated to 1500+
+    const strong = estimateElo(72, { site: 'chesscom', timeClass: 'rapid', playerRating: 500, moveCount: 20 });
+    expect(strong).toBe(800);
+  });
+
+  it('distinguishes Rapid expected accuracy between 500 Chess.com vs 820 Lichess', () => {
+    expect(expectedAccuracyForRating(500, 'chesscom', 'rapid')).toBe(60);
+    expect(expectedAccuracyForRating(820, 'lichess', 'rapid')).toBe(60);
+  });
+
+  it('smoothly estimates unanchored rating when no match rating exists', () => {
+    expect(estimateElo(0, { site: 'chesscom', timeClass: 'rapid' })).toBe(100);
+    expect(estimateElo(60, { site: 'chesscom', timeClass: 'rapid' })).toBe(500);
+    expect(estimateElo(97, { site: 'chesscom', timeClass: 'rapid' })).toBe(2800);
+
+    expect(estimateElo(0, { site: 'lichess', timeClass: 'rapid' })).toBe(100);
+    expect(estimateElo(60, { site: 'lichess', timeClass: 'rapid' })).toBe(820);
+    expect(estimateElo(97, { site: 'lichess', timeClass: 'rapid' })).toBe(2800);
+  });
+
+  it('is monotonically non-decreasing across 0 to 100 unanchored accuracy for both platforms', () => {
+    for (const site of ['lichess' as const, 'chesscom' as const]) {
+      let prev = estimateElo(0, { site, timeClass: 'rapid' });
+      for (let acc = 1; acc <= 100; acc += 0.5) {
+        const current = estimateElo(acc, { site, timeClass: 'rapid' });
+        expect(current).toBeGreaterThanOrEqual(prev);
+        prev = current;
+      }
+    }
   });
 });
 

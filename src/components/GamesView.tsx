@@ -2,7 +2,8 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useStore } from '../store';
 import type { GameAnalysis, GameRecord, TrainingItem } from '../types';
 import { CATEGORY_META } from '../lib/classify';
-import { formatEval, gameLabel } from '../lib/analysis';
+import { computeReviewStats, estimateGameElo, formatEval, gameLabel } from '../lib/analysis';
+import { getGameRatings } from '../lib/pgn';
 import { posKeyOf } from '../lib/training';
 import { Board, type BoardArrow } from './Board';
 import { isMateScore } from '../lib/engine';
@@ -26,6 +27,12 @@ export function GamesView() {
         .map(g => ({ game: g, analysis: analyses[g.key] })),
     [games, analyses]
   );
+  const stats = useMemo(() => computeReviewStats(rows), [rows]);
+  const siteEntries = useMemo(() => {
+    return (Object.entries(stats.bySite) as [import('../types').Site, import('../lib/analysis').SiteStats][]).filter(
+      ([_, s]) => s && s.games > 0
+    );
+  }, [stats.bySite]);
 
   if (rows.length === 0) {
     return (
@@ -43,6 +50,43 @@ export function GamesView() {
 
   return (
     <div className="view">
+      <div className="stat-row">
+        <div className="stat">
+          {siteEntries.length === 0 ? (
+            <>
+              <div className="stat-value">—</div>
+              <div className="stat-label">avg rating (elo)</div>
+            </>
+          ) : siteEntries.length === 1 ? (
+            <>
+              <div className="stat-value">{siteEntries[0][1].avgRating}</div>
+              <div className="stat-label">
+                avg rating ({siteEntries[0][0] === 'lichess' ? 'Lichess' : siteEntries[0][0] === 'chesscom' ? 'Chess.com' : 'Import'})
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="stat-value" style={{ fontSize: '1.15rem', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {siteEntries.map(([site, s]) => (
+                  <span key={site}>
+                    {site === 'lichess' ? 'Lichess' : site === 'chesscom' ? 'Chess.com' : 'Import'}: <b>{s.avgRating}</b>
+                  </span>
+                ))}
+              </div>
+              <div className="stat-label">avg rating by platform</div>
+            </>
+          )}
+        </div>
+        <div className="stat">
+          <div className="stat-value">{stats.avgAccuracy > 0 ? `${stats.avgAccuracy}%` : '—'}</div>
+          <div className="stat-label">avg accuracy</div>
+        </div>
+        <div className="stat">
+          <div className="stat-value">{stats.analyzedGames} / {rows.length}</div>
+          <div className="stat-label">games reviewed</div>
+        </div>
+      </div>
+
       <section className="card">
         <h2>Your games ({rows.length})</h2>
         <table className="table">
@@ -53,6 +97,7 @@ export function GamesView() {
               <th>TC</th>
               <th>Result</th>
               <th>Accuracy</th>
+              <th>Est. Elo</th>
               <th>Mistakes</th>
               <th></th>
             </tr>
@@ -70,6 +115,7 @@ export function GamesView() {
                   {game.playerResult}
                 </td>
                 <td>{analysis ? `${analysis.accuracy}%${analysis.partial ? ' ⚠︎partial' : ''}` : '—'}</td>
+                <td>{analysis ? estimateGameElo(game, analysis) : '—'}</td>
                 <td>{analysis ? analysis.mistakeCount : '—'}</td>
                 <td className="row gap">
                   {analysis && (
@@ -144,13 +190,26 @@ function ReviewModal({ gameKey, onClose }: { gameKey: string; onClose: () => voi
     return clamped;
   });
 
+  const gameRatings = getGameRatings(game);
+  const elo = estimateGameElo(game, analysis);
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal card" onClick={e => e.stopPropagation()}>
         <div className="row between">
-          <h3>
-            Review: {gameLabel(game)} {game.url && <a href={game.url} target="_blank" rel="noreferrer" className="small">↗</a>}
-          </h3>
+          <div>
+            <h3>
+              Review: {gameLabel(game)} {game.url && <a href={game.url} target="_blank" rel="noreferrer" className="small">↗</a>}
+            </h3>
+            <div className="muted small">
+              Accuracy: <b>{analysis.accuracy}%</b> · Est. Elo: <b>{elo}</b>{' '}
+              <span className="muted">({game.site === 'lichess' ? 'Lichess' : game.site === 'chesscom' ? 'Chess.com' : 'Import'})</span>
+              {gameRatings.playerRating ? (
+                <span className="muted"> · rated {gameRatings.playerRating} in match</span>
+              ) : null}
+              {analysis.partial ? <span className="warn"> (partial analysis)</span> : null}
+            </div>
+          </div>
           <button className="small-btn" onClick={onClose}>
             ✕ close
           </button>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitPgn, parseHeaders, parseMovetext, buildGameRecord, timeClassFromSeconds, baseTimeSeconds } from '../src/lib/pgn';
+import { splitPgn, parseHeaders, parseMovetext, buildGameRecord, timeClassFromSeconds, baseTimeSeconds, parseRating, getGameRatings } from '../src/lib/pgn';
 import { parsePgnImports, pgnHash, trustedGameUrl } from '../src/lib/fetchers';
 
 const GAME_A = `[Event "A"]
@@ -71,6 +71,35 @@ describe('pgn parsing', () => {
 
   it('throws on PGNs without moves', () => {
     expect(() => buildGameRecord({ site: 'lichess', id: 'x', url: '', pgn: '[Event "x"]\n[White "a"]\n[Black "b"]\n*', username: 'a' })).toThrow();
+  });
+
+  it('parses player and opponent ratings from PGN headers', () => {
+    expect(parseRating('1050')).toBe(1050);
+    expect(parseRating('500')).toBe(500);
+    expect(parseRating('?')).toBeUndefined();
+    expect(parseRating('')).toBeUndefined();
+    expect(parseRating(undefined)).toBeUndefined();
+    expect(parseRating('9999')).toBeUndefined(); // unreasonable rating
+
+    const pgnWithElo = `[Event "Match"]
+[White "Alice"]
+[Black "Bob"]
+[WhiteElo "1050"]
+[BlackElo "1020"]
+[Result "1-0"]
+
+1. e4 e5 1-0`;
+    const aliceGame = buildGameRecord({ site: 'lichess', id: 'm1', url: '', pgn: pgnWithElo, username: 'alice' });
+    expect(aliceGame.playerRating).toBe(1050);
+    expect(aliceGame.opponentRating).toBe(1020);
+
+    const bobGame = buildGameRecord({ site: 'lichess', id: 'm1', url: '', pgn: pgnWithElo, username: 'bob' });
+    expect(bobGame.playerRating).toBe(1020);
+    expect(bobGame.opponentRating).toBe(1050);
+
+    const ratingsFromPgn = getGameRatings({ ...aliceGame, playerRating: undefined, opponentRating: undefined });
+    expect(ratingsFromPgn.playerRating).toBe(1050);
+    expect(ratingsFromPgn.opponentRating).toBe(1020);
   });
 });
 

@@ -1,4 +1,4 @@
-import type { Category, EngineSettings } from '../types';
+import type { Category, EngineSettings, Site, TimeClass } from '../types';
 import { isMateScore, mateDistance } from './engine';
 import { PIECE_NAMES, materialDelta, phaseOf, uciToSan } from './position';
 
@@ -238,7 +238,7 @@ function hungPieceName(fenAfter: string, opponentBestUci: string): string {
   return 'pawn';
 }
 
-/* ---------------- accuracy (lichess-style win% model) ---------------- */
+/* ---------------- accuracy (official lichess win% & harmonic model) ---------------- */
 
 function winPercent(cpWhite: number): number {
   const clamped = Math.max(-1500, Math.min(1500, cpWhite));
@@ -258,6 +258,339 @@ export function moveAccuracy(evalBefore: number, evalAfter: number, color: 'w' |
   const drop = Math.max(0, rawDrop);
   const acc = 103.1668 * Math.exp(-0.04354 * drop) - 3.1669;
   return Math.max(0, Math.min(100, acc));
+}
+
+export interface PlayerMoveEval {
+  evalBefore: number;
+  evalAfterPlayer: number;
+  color: 'w' | 'b';
+}
+
+function standardDeviation(values: number[]): number {
+  if (values.length <= 1) return 0;
+  const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (values.length - 1);
+  return Math.sqrt(variance);
+}
+
+/**
+ * Computes official Lichess-style game accuracy from player moves.
+ * Combines a volatility-weighted mean and a harmonic mean of move accuracies.
+ * The harmonic mean ensures major blunders and mistakes cannot be masked by routine moves.
+ */
+export function calculateGameAccuracy(moves: PlayerMoveEval[]): number {
+  if (moves.length === 0) return 0;
+
+  // 1. Calculate per-move accuracies and win% from player perspective
+  const accuracies: number[] = [];
+  const winPercents: number[] = [];
+
+  for (const m of moves) {
+    const acc = moveAccuracy(m.evalBefore, m.evalAfterPlayer, m.color);
+    accuracies.push(acc);
+
+    const sign = m.color === 'w' ? 1 : -1;
+    const beforeWhite = isMateScore(m.evalBefore) ? sign * (m.evalBefore > 0 ? 1500 : -1500) : sign * m.evalBefore;
+    const wp = winPercent(beforeWhite);
+    winPercents.push(m.color === 'w' ? wp : 100 - wp);
+  }
+
+  // 2. Volatility weights via sliding window standard deviation (clamped to [0.5, 12])
+  const windowSize = Math.max(2, Math.min(8, Math.floor(winPercents.length / 10)));
+  const weights: number[] = [];
+
+  for (let i = 0; i < winPercents.length; i++) {
+    const start = Math.max(0, i - Math.floor(windowSize / 2));
+    const end = Math.min(winPercents.length, start + windowSize);
+    const windowVals = winPercents.slice(start, end);
+    const sd = standardDeviation(windowVals);
+    weights.push(Math.max(0.5, Math.min(12, sd)));
+  }
+
+  // 3. Volatility-weighted mean
+  let weightSum = 0;
+  let weightedAccSum = 0;
+  for (let i = 0; i < accuracies.length; i++) {
+    const w = weights[i];
+    weightSum += w;
+    weightedAccSum += w * accuracies[i];
+  }
+  const weightedMean = weightSum > 0 ? weightedAccSum / weightSum : 0;
+
+  // 4. Harmonic mean (clamped to at least 1 to avoid division by zero)
+  let recipSum = 0;
+  for (const acc of accuracies) {
+    recipSum += 1 / Math.max(1, acc);
+  }
+  const harmonicMean = recipSum > 0 ? accuracies.length / recipSum : 0;
+
+  // 5. Final game accuracy: mean of volatility-weighted mean and harmonic mean
+  const combined = (weightedMean + harmonicMean) / 2;
+  return Math.round(Math.max(0, Math.min(100, combined)) * 10) / 10;
+}
+
+/* ---------------- estimated elo model ---------------- */
+
+export interface EstimateEloOptions {
+  site?: Site;
+  timeClass?: TimeClass;
+  playerRating?: number;
+  opponentRating?: number;
+  moveCount?: number;
+  fallbackBaseline?: number;
+}
+
+/**
+ * Empirical conversion tables between Chess.com and Lichess (ChessGoals datasets).
+ */
+export const CHESSCOM_TO_LICHESS_RAPID_TABLE: readonly { chesscom: number; lichess: number }[] = [
+  { chesscom: 200, lichess: 500 },
+  { chesscom: 400, lichess: 720 },
+  { chesscom: 500, lichess: 820 },
+  { chesscom: 600, lichess: 910 },
+  { chesscom: 700, lichess: 1005 },
+  { chesscom: 800, lichess: 1095 },
+  { chesscom: 900, lichess: 1185 },
+  { chesscom: 1000, lichess: 1280 },
+  { chesscom: 1100, lichess: 1490 },
+  { chesscom: 1200, lichess: 1575 },
+  { chesscom: 1400, lichess: 1675 },
+  { chesscom: 1600, lichess: 1825 },
+  { chesscom: 1800, lichess: 2025 },
+  { chesscom: 2000, lichess: 2175 },
+  { chesscom: 2200, lichess: 2350 },
+  { chesscom: 2500, lichess: 2550 },
+  { chesscom: 2800, lichess: 2800 },
+];
+
+export const CHESSCOM_TO_LICHESS_BLITZ_TABLE: readonly { chesscom: number; lichess: number }[] = [
+  { chesscom: 200, lichess: 550 },
+  { chesscom: 400, lichess: 850 },
+  { chesscom: 500, lichess: 980 },
+  { chesscom: 600, lichess: 1080 },
+  { chesscom: 800, lichess: 1220 },
+  { chesscom: 1000, lichess: 1420 },
+  { chesscom: 1200, lichess: 1530 },
+  { chesscom: 1400, lichess: 1680 },
+  { chesscom: 1600, lichess: 1840 },
+  { chesscom: 1800, lichess: 2030 },
+  { chesscom: 2000, lichess: 2220 },
+  { chesscom: 2200, lichess: 2380 },
+  { chesscom: 2400, lichess: 2500 },
+  { chesscom: 2600, lichess: 2650 },
+  { chesscom: 2800, lichess: 2800 },
+];
+
+export const CHESSCOM_TO_LICHESS_TABLE = CHESSCOM_TO_LICHESS_RAPID_TABLE;
+
+/**
+ * Expected move accuracy by rating level for Chess.com Rapid.
+ */
+export const CHESSCOM_RAPID_ACCURACY_ANCHORS: readonly { rating: number; accuracy: number }[] = [
+  { rating: 200, accuracy: 50 },
+  { rating: 500, accuracy: 60 },
+  { rating: 800, accuracy: 68 },
+  { rating: 1000, accuracy: 73 },
+  { rating: 1200, accuracy: 77 },
+  { rating: 1400, accuracy: 81 },
+  { rating: 1600, accuracy: 84 },
+  { rating: 1800, accuracy: 87 },
+  { rating: 2000, accuracy: 90 },
+  { rating: 2200, accuracy: 92 },
+  { rating: 2500, accuracy: 95 },
+  { rating: 2800, accuracy: 97 },
+];
+
+/**
+ * Expected move accuracy by rating level for Chess.com Blitz.
+ */
+export const CHESSCOM_BLITZ_ACCURACY_ANCHORS: readonly { rating: number; accuracy: number }[] = [
+  { rating: 200, accuracy: 48 },
+  { rating: 500, accuracy: 56 },
+  { rating: 800, accuracy: 64 },
+  { rating: 1000, accuracy: 69 },
+  { rating: 1200, accuracy: 73 },
+  { rating: 1400, accuracy: 77 },
+  { rating: 1600, accuracy: 81 },
+  { rating: 1800, accuracy: 84 },
+  { rating: 2000, accuracy: 87 },
+  { rating: 2200, accuracy: 90 },
+  { rating: 2500, accuracy: 93 },
+  { rating: 2800, accuracy: 96 },
+];
+
+/**
+ * Expected move accuracy by rating level for Lichess Rapid.
+ */
+export const LICHESS_RAPID_ACCURACY_ANCHORS: readonly { rating: number; accuracy: number }[] = [
+  { rating: 500, accuracy: 50 },
+  { rating: 820, accuracy: 60 },
+  { rating: 1050, accuracy: 67 },
+  { rating: 1200, accuracy: 71 },
+  { rating: 1400, accuracy: 76 },
+  { rating: 1600, accuracy: 80 },
+  { rating: 1800, accuracy: 84 },
+  { rating: 2000, accuracy: 88 },
+  { rating: 2200, accuracy: 91 },
+  { rating: 2400, accuracy: 93 },
+  { rating: 2600, accuracy: 95 },
+  { rating: 2800, accuracy: 97 },
+];
+
+/**
+ * Expected move accuracy by rating level for Lichess Blitz.
+ */
+export const LICHESS_BLITZ_ACCURACY_ANCHORS: readonly { rating: number; accuracy: number }[] = [
+  { rating: 500, accuracy: 48 },
+  { rating: 980, accuracy: 56 },
+  { rating: 1200, accuracy: 64 },
+  { rating: 1400, accuracy: 69 },
+  { rating: 1600, accuracy: 74 },
+  { rating: 1800, accuracy: 79 },
+  { rating: 2000, accuracy: 83 },
+  { rating: 2200, accuracy: 87 },
+  { rating: 2400, accuracy: 90 },
+  { rating: 2600, accuracy: 93 },
+  { rating: 2800, accuracy: 96 },
+];
+
+export const CHESSCOM_ACCURACY_ANCHORS = CHESSCOM_RAPID_ACCURACY_ANCHORS;
+export const LICHESS_ACCURACY_ANCHORS = LICHESS_RAPID_ACCURACY_ANCHORS;
+export const EXPECTED_ACCURACY_BY_RATING = LICHESS_RAPID_ACCURACY_ANCHORS;
+
+function getConversionTable(timeClass?: TimeClass): readonly { chesscom: number; lichess: number }[] {
+  return timeClass === 'blitz' || timeClass === 'bullet'
+    ? CHESSCOM_TO_LICHESS_BLITZ_TABLE
+    : CHESSCOM_TO_LICHESS_RAPID_TABLE;
+}
+
+/** Convert Chess.com rating to equivalent Lichess rating */
+export function chesscomToLichess(chesscomElo: number, timeClass?: TimeClass): number {
+  const table = getConversionTable(timeClass);
+  if (chesscomElo <= table[0].chesscom) {
+    const p0 = table[0];
+    return Math.max(100, Math.round(p0.lichess - (p0.chesscom - chesscomElo) * 1.5));
+  }
+  const last = table[table.length - 1];
+  if (chesscomElo >= last.chesscom) {
+    return Math.round(last.lichess + (chesscomElo - last.chesscom));
+  }
+  for (let i = 0; i < table.length - 1; i++) {
+    const p1 = table[i];
+    const p2 = table[i + 1];
+    if (chesscomElo >= p1.chesscom && chesscomElo <= p2.chesscom) {
+      const t = (chesscomElo - p1.chesscom) / (p2.chesscom - p1.chesscom);
+      return Math.round(p1.lichess + t * (p2.lichess - p1.lichess));
+    }
+  }
+  return last.lichess;
+}
+
+/** Convert Lichess rating to equivalent Chess.com rating */
+export function lichessToChesscom(lichessElo: number, timeClass?: TimeClass): number {
+  const table = getConversionTable(timeClass);
+  if (lichessElo <= table[0].lichess) {
+    const p0 = table[0];
+    return Math.max(100, Math.round(p0.chesscom - (p0.lichess - lichessElo) * 0.67));
+  }
+  const last = table[table.length - 1];
+  if (lichessElo >= last.lichess) {
+    return Math.round(last.chesscom + (lichessElo - last.lichess));
+  }
+  for (let i = 0; i < table.length - 1; i++) {
+    const p1 = table[i];
+    const p2 = table[i + 1];
+    if (lichessElo >= p1.lichess && lichessElo <= p2.lichess) {
+      const t = (lichessElo - p1.lichess) / (p2.lichess - p1.lichess);
+      return Math.round(p1.chesscom + t * (p2.chesscom - p1.chesscom));
+    }
+  }
+  return last.chesscom;
+}
+
+function getAnchors(site?: Site, timeClass?: TimeClass): readonly { rating: number; accuracy: number }[] {
+  const isSpeed = timeClass === 'blitz' || timeClass === 'bullet';
+  if (site === 'chesscom') {
+    return isSpeed ? CHESSCOM_BLITZ_ACCURACY_ANCHORS : CHESSCOM_RAPID_ACCURACY_ANCHORS;
+  }
+  return isSpeed ? LICHESS_BLITZ_ACCURACY_ANCHORS : LICHESS_RAPID_ACCURACY_ANCHORS;
+}
+
+/**
+ * Returns the expected accuracy percentage for a given rating level on a specific platform and time control.
+ */
+export function expectedAccuracyForRating(rating: number, site?: Site, timeClass?: TimeClass): number {
+  const anchors = getAnchors(site, timeClass);
+  if (rating <= anchors[0].rating) return anchors[0].accuracy;
+  const last = anchors[anchors.length - 1];
+  if (rating >= last.rating) return last.accuracy;
+
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const p1 = anchors[i];
+    const p2 = anchors[i + 1];
+    if (rating >= p1.rating && rating <= p2.rating) {
+      const t = (rating - p1.rating) / (p2.rating - p1.rating);
+      return Math.round((p1.accuracy + t * (p2.accuracy - p1.accuracy)) * 10) / 10;
+    }
+  }
+  return last.accuracy;
+}
+
+/**
+ * Inverses expected accuracy to estimate an unanchored rating when no match metadata exists.
+ */
+export function ratingForAccuracy(accuracy: number, site?: Site, timeClass?: TimeClass): number {
+  const anchors = getAnchors(site, timeClass);
+  if (accuracy <= 0) return 100;
+  if (accuracy <= anchors[0].accuracy) {
+    return Math.max(100, Math.round(anchors[0].rating * (accuracy / anchors[0].accuracy)));
+  }
+  const last = anchors[anchors.length - 1];
+  if (accuracy >= last.accuracy) {
+    return Math.min(2850, Math.round(last.rating + (accuracy - last.accuracy) * 12.5));
+  }
+
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const p1 = anchors[i];
+    const p2 = anchors[i + 1];
+    if (accuracy >= p1.accuracy && accuracy <= p2.accuracy) {
+      const t = (accuracy - p1.accuracy) / (p2.accuracy - p1.accuracy);
+      return Math.round(p1.rating + t * (p2.rating - p1.rating));
+    }
+  }
+  return last.rating;
+}
+
+/**
+ * Estimate player performance rating (Elo) for a match on its native platform.
+ *
+ * If match rating metadata is present (playerRating, opponentRating, or fallbackBaseline):
+ * - Evaluates performance relative to the expected accuracy for that match strength and time control.
+ * - Outperforming expected accuracy raises the estimated rating; underperforming lowers it.
+ * - Scales sensitivity by move count to prevent short games from swinging wildly.
+ *
+ * If no match rating is available, smoothly falls back to the unanchored platform curve.
+ */
+export function estimateElo(accuracy: number, options?: EstimateEloOptions): number {
+  if (accuracy <= 0) return 100;
+
+  const site = options?.site;
+  const timeClass = options?.timeClass;
+  const base =
+    options?.playerRating && options?.opponentRating
+      ? (options.playerRating + options.opponentRating) / 2
+      : options?.playerRating ?? options?.opponentRating ?? options?.fallbackBaseline;
+
+  if (base !== undefined && base > 0) {
+    const expected = expectedAccuracyForRating(base, site, timeClass);
+    const delta = accuracy - expected;
+    const moves = options?.moveCount ?? 20;
+    const weight = Math.min(1, Math.max(0.4, moves / 15));
+    const perfRating = base + delta * 25 * weight;
+    return Math.max(100, Math.min(3200, Math.round(perfRating)));
+  }
+
+  return ratingForAccuracy(accuracy, site, timeClass);
 }
 
 /* ---------------- schema migration ---------------- */

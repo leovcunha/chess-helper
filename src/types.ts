@@ -39,6 +39,8 @@ export interface GameRecord {
   playedAt?: string;
   opening?: Opening;
   termination?: string;
+  playerRating?: number;
+  opponentRating?: number;
 }
 
 export interface BestLine {
@@ -75,6 +77,7 @@ export interface GameAnalysis {
   mpv: number;
   playerColor: Color;
   accuracy: number; // 0-100
+  estimatedElo?: number; // estimated player rating for this match
   plies: PlyAnalysis[]; // one entry per half-move of the game
   mistakeCount: number;
   partial?: boolean; // true when some positions could not be evaluated

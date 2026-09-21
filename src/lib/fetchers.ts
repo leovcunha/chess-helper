@@ -85,10 +85,11 @@ export async function fetchLichess(
     if (variantKey && variantKey !== 'standard') continue;
     const speed = pickTimeClass((j.speed as string) ?? '');
     if (filters.timeClasses.length > 0 && !speed) continue;
-    const players = j.players as { white?: { user?: { name?: string } }; black?: { user?: { name?: string } } } | undefined;
+    const players = j.players as { white?: { user?: { name?: string }; rating?: number }; black?: { user?: { name?: string }; rating?: number } } | undefined;
     const white = players?.white?.user?.name ?? '?';
     const black = players?.black?.user?.name ?? '?';
     if (white.toLowerCase() !== username.toLowerCase() && black.toLowerCase() !== username.toLowerCase()) continue;
+    const isWhite = white.toLowerCase() === username.toLowerCase();
     const pgn = (j.pgn as string) ?? '';
     if (!pgn) continue;
     try {
@@ -101,6 +102,8 @@ export async function fetchLichess(
         timeClassOverride: speed ?? undefined,
         ratedOverride: typeof j.rated === 'boolean' ? j.rated : undefined,
         playedAt: j.lastMoveAt ? new Date(j.lastMoveAt as number).toISOString().slice(0, 10) : undefined,
+        playerRatingOverride: isWhite ? players?.white?.rating : players?.black?.rating,
+        opponentRatingOverride: isWhite ? players?.black?.rating : players?.white?.rating,
       });
       if (!seen.has(rec.key)) {
         seen.add(rec.key);
@@ -150,9 +153,14 @@ export async function fetchChesscom(
       if (!pgn) continue;
       const timeClass = pickTimeClass(g.time_class as string);
       if (filters.timeClasses.length > 0 && !timeClass) continue;
-      const white = ((g.white as Record<string, unknown>)?.username as string) ?? '?';
-      const black = ((g.black as Record<string, unknown>)?.username as string) ?? '?';
+      const whiteObj = g.white as Record<string, unknown> | undefined;
+      const blackObj = g.black as Record<string, unknown> | undefined;
+      const white = (whiteObj?.username as string) ?? '?';
+      const black = (blackObj?.username as string) ?? '?';
       if (white.toLowerCase() !== username.toLowerCase() && black.toLowerCase() !== username.toLowerCase()) continue;
+      const isWhite = white.toLowerCase() === username.toLowerCase();
+      const whiteRating = typeof whiteObj?.rating === 'number' ? whiteObj.rating : undefined;
+      const blackRating = typeof blackObj?.rating === 'number' ? blackObj.rating : undefined;
       try {
         const url = trustedGameUrl((g.url as string) ?? '');
         const id = url.split('/').filter(Boolean).pop() ?? String(out.length);
@@ -165,6 +173,8 @@ export async function fetchChesscom(
           timeClassOverride: timeClass ?? undefined,
           ratedOverride: typeof g.rated === 'boolean' ? g.rated : undefined,
           playedAt: g.end_time ? new Date((g.end_time as number) * 1000).toISOString().slice(0, 10) : undefined,
+          playerRatingOverride: isWhite ? whiteRating : blackRating,
+          opponentRatingOverride: isWhite ? blackRating : whiteRating,
         });
         if (!seen.has(rec.key)) {
           seen.add(rec.key);

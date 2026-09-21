@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { analyzeGames } from '../src/lib/analysis';
+import { analyzeGames, computeReviewStats, estimateElo } from '../src/lib/analysis';
 import type { EnginePool } from '../src/lib/engine';
 import type { AnalyzeResult, EngineLine } from '../src/lib/engine';
 import { dbBulkPut, dbGet, dbGetAllEntries, dbDelete, dbPut } from '../src/lib/db';
@@ -87,7 +87,10 @@ describe('analyzeGames', () => {
     // no eval failures with a healthy pool
     expect(persisted.every(a => !a.partial)).toBe(true);
     // failed positions are excluded from the accuracy average
-    for (const a of persisted) expect(a.accuracy).toBeGreaterThan(0);
+    for (const a of persisted) {
+      expect(a.accuracy).toBeGreaterThan(0);
+      expect(a.estimatedElo).toBe(estimateElo(a.accuracy, { site: 'lichess', timeClass: 'blitz' }));
+    }
   });
 
   it('retries transient failures once and marks persisting failures as partial', async () => {
@@ -189,3 +192,78 @@ describe('indexeddb wrapper', () => {
     await dbDelete('training', 'pos-1');
   });
 });
+
+describe('computeReviewStats', () => {
+  it('handles empty rows gracefully', () => {
+    const stats = computeReviewStats([]);
+    expect(stats).toEqual({
+      totalGames: 0,
+      analyzedGames: 0,
+      avgAccuracy: 0,
+      avgRating: 0,
+      bySite: {},
+      ratingDisplay: '—',
+    });
+  });
+
+  it('ignores unanalyzed games when computing averages', () => {
+    const game1 = makeGame('g1');
+    const game2 = makeGame('g2');
+    const stats = computeReviewStats([
+      { game: game1, analysis: undefined },
+      { game: game2, analysis: undefined },
+    ]);
+    expect(stats).toEqual({
+      totalGames: 2,
+      analyzedGames: 0,
+      avgAccuracy: 0,
+      avgRating: 0,
+      bySite: {},
+      ratingDisplay: '—',
+    });
+  });
+
+  it('computes clean single-site average rating when only one platform is present', () => {
+    const game1 = { ...makeGame('g1'), site: 'lichess' as const, timeClass: 'rapid' as const, playerRating: 1050, opponentRating: 1050 };
+    const analysis1 = { accuracy: 67 } as unknown as import('../src/types').GameAnalysis;
+
+    const stats = computeReviewStats([{ game: game1, analysis: analysis1 }]);
+    expect(stats.avgRating).toBe(1050);
+    expect(stats.ratingDisplay).toBe('1050');
+    expect(stats.bySite.lichess?.avgRating).toBe(1050);
+  });
+
+  it('separates Lichess and Chess.com ratings and avoids mixing incompatible rating pools', () => {
+    const lichessGame = { ...makeGame('g1'), site: 'lichess' as const, timeClass: 'rapid' as const, playerRating: 1050, opponentRating: 1050 };
+    const chesscomGame = { ...makeGame('g2'), site: 'chesscom' as const, timeClass: 'rapid' as const, playerRating: 500, opponentRating: 500 };
+    const unanalyzedGame = { ...makeGame('g3'), site: 'lichess' as const, timeClass: 'rapid' as const };
+
+    // At 1050 on Lichess Rapid, expected accuracy is 67%. Playing at 67% -> 1050 performance
+    const analysis1 = {
+      accuracy: 67,
+    } as unknown as import('../src/types').GameAnalysis;
+
+    // At 500 on Chess.com Rapid, expected accuracy is 60%. Playing at 60% -> 500 performance
+    const analysis2 = {
+      accuracy: 60,
+    } as unknown as import('../src/types').GameAnalysis;
+
+    const stats = computeReviewStats([
+      { game: lichessGame, analysis: analysis1 },
+      { game: chesscomGame, analysis: analysis2 },
+      { game: unanalyzedGame, analysis: undefined }, // unanalyzed
+    ]);
+
+    expect(stats.totalGames).toBe(3);
+    expect(stats.analyzedGames).toBe(2);
+    expect(stats.avgAccuracy).toBe(63.5); // (67 + 60) / 2
+    // Each platform maintains its own accurate average
+    expect(stats.bySite.lichess?.avgRating).toBe(1050);
+    expect(stats.bySite.chesscom?.avgRating).toBe(500);
+    // ratingDisplay explicitly separates the platforms
+    expect(stats.ratingDisplay).toBe('Lichess: 1050 · Chess.com: 500');
+    // avgRating normalizes Chess.com 500 (~820 Lichess Rapid equivalent) to avoid bogus 775 average
+    expect(stats.avgRating).toBe(935);
+  });
+});
+

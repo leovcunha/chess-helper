@@ -81,6 +81,8 @@ export interface BuildGameArgs {
   timeClassOverride?: TimeClass;
   ratedOverride?: boolean;
   playedAt?: string;
+  playerRatingOverride?: number;
+  opponentRatingOverride?: number;
 }
 
 /**
@@ -111,6 +113,11 @@ export function buildGameRecord(args: BuildGameArgs): GameRecord {
     opening = { eco: headers['ECO'], name: headers['Opening'] ?? headers['ECO'] };
   }
 
+  const whiteElo = parseRating(headers['WhiteElo']);
+  const blackElo = parseRating(headers['BlackElo']);
+  const playerRating = args.playerRatingOverride ?? (playerColor === 'w' ? whiteElo : blackElo);
+  const opponentRating = args.opponentRatingOverride ?? (playerColor === 'w' ? blackElo : whiteElo);
+
   return {
     key: `${args.site}:${args.id}`,
     site: args.site,
@@ -126,5 +133,35 @@ export function buildGameRecord(args: BuildGameArgs): GameRecord {
     playedAt: args.playedAt ?? headers['UTCDate'] ?? headers['Date'],
     opening,
     termination: headers['Termination'],
+    playerRating,
+    opponentRating,
   };
 }
+
+export function parseRating(val: string | undefined): number | undefined {
+  if (!val) return undefined;
+  const n = parseInt(val, 10);
+  return Number.isFinite(n) && n > 0 && n < 4000 ? n : undefined;
+}
+
+/**
+ * Retrieve player and opponent ratings from game record or parse from PGN headers.
+ * Ensures backward compatibility with existing games stored in IndexedDB.
+ */
+export function getGameRatings(game: GameRecord): { playerRating?: number; opponentRating?: number } {
+  if (game.playerRating !== undefined || game.opponentRating !== undefined) {
+    return { playerRating: game.playerRating, opponentRating: game.opponentRating };
+  }
+  try {
+    const headers = parseHeaders(game.pgn);
+    const whiteElo = parseRating(headers['WhiteElo']);
+    const blackElo = parseRating(headers['BlackElo']);
+    return {
+      playerRating: game.playerColor === 'w' ? whiteElo : blackElo,
+      opponentRating: game.playerColor === 'w' ? blackElo : whiteElo,
+    };
+  } catch {
+    return {};
+  }
+}
+
