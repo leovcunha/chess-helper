@@ -131,4 +131,25 @@ describe('buildTrainingQueue', () => {
     expect(buildTrainingQueue(analyses, {}, undefined, 'opening').items).toHaveLength(1);
     expect(buildTrainingQueue(analyses, {}, undefined, 'opening').items[0].category).toBe('positional');
   });
+
+  it('filters by untrainedOnly when requested', () => {
+    const stats: Record<string, TrainingStats> = {
+      [posKeyOf(FEN_1)]: { attempts: 2, correct: 2, lastResult: 'correct' },
+      [posKeyOf(FEN_2)]: { attempts: 0, correct: 0 },
+      // FEN_3 has no stats entry (never seen)
+    };
+    const analyses = [
+      analysis('g1', [
+        mistakePly(FEN_1, 'positional', 60),
+        mistakePly(FEN_2, 'positional', 70),
+        mistakePly(FEN_3, 'hung-piece', 200),
+      ]),
+    ];
+    const allQueue = buildTrainingQueue(analyses, {}, undefined, undefined, stats, undefined, undefined, false);
+    expect(allQueue.items).toHaveLength(3);
+
+    const untrainedQueue = buildTrainingQueue(analyses, {}, undefined, undefined, stats, undefined, undefined, true);
+    expect(untrainedQueue.items).toHaveLength(2);
+    expect(untrainedQueue.items.map(i => posKeyOf(i.fen))).toEqual([posKeyOf(FEN_2), posKeyOf(FEN_3)]);
+  });
 });

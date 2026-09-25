@@ -155,10 +155,14 @@ function mistakeToItem(ply: GameAnalysis['plies'][number], game: GameRecord): Tr
 }
 
 function ReviewModal({ gameKey, onClose }: { gameKey: string; onClose: () => void }) {
-  const { games, analyses, trainPositions, dismissLabel } = useStore();
+  const { games, analyses, trainPositions, dismissLabel, trainingStats } = useStore();
   const game: GameRecord | undefined = games[gameKey];
   const analysis: GameAnalysis | undefined = analyses[gameKey];
   const mistakePlies = useMemo(() => (analysis ? analysis.plies.filter(p => p.category) : []), [analysis]);
+  const untrainedMistakePlies = useMemo(
+    () => mistakePlies.filter(p => (trainingStats[posKeyOf(p.fenBefore)]?.attempts ?? 0) === 0),
+    [mistakePlies, trainingStats]
+  );
   const [mistakeIdx, setMistakeIdx] = useState(0);
   const [plyIdx, setPlyIdx] = useState(mistakePlies[0]?.ply ?? 1);
 
@@ -232,7 +236,7 @@ function ReviewModal({ gameKey, onClose }: { gameKey: string; onClose: () => voi
                     }}
                     title="Drill this position in the training room"
                   >
-                    🎯 Train this mistake
+                    🎯 Train this mistake {ply.category && (trainingStats[posKeyOf(ply.fenBefore)]?.attempts ?? 0) > 0 ? '(re-train)' : ''}
                   </button>
                 )}
               </div>
@@ -245,6 +249,13 @@ function ReviewModal({ gameKey, onClose }: { gameKey: string; onClose: () => voi
                     · {CATEGORY_META[ply.category].icon} {CATEGORY_META[ply.category].label}
                     {ply.hungPiece ? ` (${ply.hungPiece})` : ''} (-{(ply.cpl / 100).toFixed(1)})
                   </span>
+                )}
+                {ply.category && (
+                  (trainingStats[posKeyOf(ply.fenBefore)]?.attempts ?? 0) > 0 ? (
+                    <span className="good small"> · ✓ trained</span>
+                  ) : (
+                    <span className="muted small"> · not yet trained</span>
+                  )
                 )}
                 {ply.category && ply.best[0] && (
                   <span className="good">
@@ -288,16 +299,44 @@ function ReviewModal({ gameKey, onClose }: { gameKey: string; onClose: () => voi
               <div className="row between" style={{ marginTop: 8 }}>
                 <span className="muted small">
                   Mistake {Math.min(mistakeIdx + 1, mistakePlies.length)}/{mistakePlies.length} in this game
+                  {untrainedMistakePlies.length < mistakePlies.length && (
+                    <> · {mistakePlies.length - untrainedMistakePlies.length}/{mistakePlies.length} trained</>
+                  )}
                 </span>
-                <button
-                  className="small-btn"
-                  onClick={() => {
-                    trainPositions(mistakePlies.map(p => mistakeToItem(p, game)));
-                    onClose();
-                  }}
-                >
-                  🎯 Train all {mistakePlies.length} mistakes of this game
-                </button>
+                <div className="row gap">
+                  {untrainedMistakePlies.length > 0 && untrainedMistakePlies.length < mistakePlies.length ? (
+                    <>
+                      <button
+                        className="small-btn primary"
+                        onClick={() => {
+                          trainPositions(untrainedMistakePlies.map(p => mistakeToItem(p, game)));
+                          onClose();
+                        }}
+                      >
+                        🎯 Train {untrainedMistakePlies.length} untrained
+                      </button>
+                      <button
+                        className="small-btn"
+                        onClick={() => {
+                          trainPositions(mistakePlies.map(p => mistakeToItem(p, game)));
+                          onClose();
+                        }}
+                      >
+                        All {mistakePlies.length}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      className="small-btn"
+                      onClick={() => {
+                        trainPositions(mistakePlies.map(p => mistakeToItem(p, game)));
+                        onClose();
+                      }}
+                    >
+                      🎯 Train all {mistakePlies.length} mistakes of this game
+                    </button>
+                  )}
+                </div>
               </div>
             )}
             <EvalGraph values={graph} mistakes={analysis.plies.map(p => !!p.category)} current={plyIdx} onJump={setPlyIdx} />

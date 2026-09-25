@@ -31,6 +31,7 @@ export interface TrainingSession {
   hintSolved: number;
   attempts: number; // every graded move this session
   failsByPos: Record<string, number>; // posKey → times failed this session
+  step: number; // incremented on each step/commit to ensure reliable UI resets
 }
 
 export interface LabelDismissal {
@@ -66,7 +67,7 @@ interface AppStore {
   ensureEngine: () => Promise<void>;
 
   training: TrainingSession;
-  startTraining: (categories?: Category[], phase?: string, piece?: string) => void;
+  startTraining: (categories?: Category[], phase?: string, piece?: string, untrainedOnly?: boolean) => void;
   trainPositions: (items: TrainingItem[]) => void;
   countAttempt: () => void;
   commitTraining: (meta: { correct?: boolean; retried?: boolean; hintUsed?: boolean; skipped?: boolean; dismissed?: boolean }) => Promise<void>;
@@ -199,6 +200,7 @@ export const useStore = create<AppStore>()(
                   failsByPos: saved.failsByPos ?? {},
                   categories: saved.categories ?? [],
                   index: saved.index ?? 0,
+                  step: saved.step ?? 0,
                 },
                 view: 'train',
               });
@@ -312,11 +314,12 @@ export const useStore = create<AppStore>()(
         hintSolved: 0,
         attempts: 0,
         failsByPos: {},
+        step: 0,
       },
 
-      startTraining: (categories, phase, piece) => {
+      startTraining: (categories, phase, piece, untrainedOnly) => {
         const { analyses, games, trainingStats, dismissed } = get();
-        const { items, categories: cats } = buildTrainingQueue(Object.values(analyses), games, categories, phase, trainingStats, piece, dismissed);
+        const { items, categories: cats } = buildTrainingQueue(Object.values(analyses), games, categories, phase, trainingStats, piece, dismissed, untrainedOnly);
         const session: TrainingSession = {
           queue: items,
           categories: cats,
@@ -329,6 +332,7 @@ export const useStore = create<AppStore>()(
           hintSolved: 0,
           attempts: 0,
           failsByPos: {},
+          step: 0,
         };
         set({ training: session, view: items.length > 0 ? 'train' : get().view });
         saveSession(session);
@@ -351,6 +355,7 @@ export const useStore = create<AppStore>()(
           hintSolved: 0,
           attempts: 0,
           failsByPos: {},
+          step: 0,
         };
         set({ training: session, view: 'train' });
         saveSession(session);
@@ -379,7 +384,7 @@ export const useStore = create<AppStore>()(
 
         if (meta.dismissed) {
           const queue = training.queue.filter((_, i) => i !== training.index);
-          const session: TrainingSession = { ...training, queue, index: Math.min(training.index, queue.length) };
+          const session: TrainingSession = { ...training, queue, index: Math.min(training.index, queue.length), step: (training.step ?? 0) + 1 };
           set({ training: session });
           saveSession(session);
           await get().dismissLabel(item.posKey, item.category);
@@ -387,12 +392,16 @@ export const useStore = create<AppStore>()(
         }
 
         const correct = meta.correct ?? false;
-        const failedBefore = (training.failsByPos[item.posKey] ?? 0) > 0;
+        const failedBefore = (training.failsByPos[item.posKey] ?? 0) > 0 || !!meta.retried;
         let queue = training.queue;
         let index = training.index;
         if (correct) {
           queue = training.queue.filter((_, i) => i !== training.index);
           index = Math.min(index, queue.length);
+        } else if (meta.skipped && queue.length <= 1) {
+          // Skipping the final remaining item cleanly finishes the session
+          queue = [];
+          index = 0;
         } else {
           queue = [...training.queue];
           const [current] = queue.splice(index, 1);
@@ -424,6 +433,7 @@ export const useStore = create<AppStore>()(
           retried: training.retried + (correct && failedBefore ? 1 : 0),
           skipped: training.skipped + (meta.skipped ? 1 : 0),
           hintSolved: training.hintSolved + (correct && meta.hintUsed ? 1 : 0),
+          step: (training.step ?? 0) + 1,
         };
         set({ training: session });
         saveSession(session);
@@ -457,6 +467,7 @@ export const useStore = create<AppStore>()(
           hintSolved: 0,
           attempts: 0,
           failsByPos: {},
+          step: 0,
         };
         set({ training: session, ...(goTo ? { view: goTo } : {}) });
         saveSession(session);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeFilters, normalizeSettings } from '../src/store';
+import { normalizeFilters, normalizeSettings, useStore } from '../src/store';
 
 describe('persisted-shape normalization', () => {
   it('fills missing chesscomMax/pgnUsername from old filters (prevents NaN caps)', () => {
@@ -38,3 +38,46 @@ describe('persisted-shape normalization', () => {
     expect(s.thresholds.minCpl).toBe(75);
   });
 });
+
+describe('training session commit logic', () => {
+  const fakeItem = {
+    posKey: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -',
+    fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+    category: 'hung-piece' as const,
+    phase: 'middlegame' as const,
+    cpl: 200,
+    best: [{ uci: 'e2e4', cp: 0 }],
+    playedSan: 'd4',
+    playedUci: 'd2d4',
+    gameKey: 'g1',
+    gameLabel: 'Test game',
+    gameUrl: '',
+  };
+
+  it('completes the session when the last exercise is solved after retry', async () => {
+    useStore.getState().trainPositions([fakeItem]);
+    expect(useStore.getState().training.queue).toHaveLength(1);
+
+    // User solved on retry:
+    await useStore.getState().commitTraining({ correct: true, retried: true });
+
+    const session = useStore.getState().training;
+    expect(session.queue).toHaveLength(0);
+    expect(session.retried).toBe(1);
+    expect(session.firstTry).toBe(0);
+    expect(session.step).toBe(1);
+  });
+
+  it('completes the session when skipping the only remaining exercise', async () => {
+    useStore.getState().trainPositions([fakeItem]);
+    expect(useStore.getState().training.queue).toHaveLength(1);
+
+    await useStore.getState().commitTraining({ correct: false, skipped: true });
+
+    const session = useStore.getState().training;
+    expect(session.queue).toHaveLength(0);
+    expect(session.skipped).toBe(1);
+    expect(session.step).toBe(1);
+  });
+});
+

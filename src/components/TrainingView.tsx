@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import type { GradeOutcome } from '../lib/training';
-import { gradeMove } from '../lib/training';
+import { gradeMove, buildTrainingQueue } from '../lib/training';
 import { CATEGORY_META } from '../lib/classify';
 import { Board, type BoardArrow } from './Board';
 import { Chess } from 'chess.js';
@@ -45,7 +45,7 @@ function pvFen(fen: string, pv: string[] | undefined, steps: number): string {
 }
 
 export function TrainingView() {
-  const { training, commitTraining, countAttempt, endTraining, startTraining, analyses, settings } = useStore();
+  const { training, commitTraining, countAttempt, endTraining, startTraining, analyses, games, settings, trainingStats, dismissed } = useStore();
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [failedAttempt, setFailedAttempt] = useState(false); // used Try again (or wrong) on this position
   const [hintUsed, setHintUsed] = useState(false); // hint arrow or best-line peeked before solving
@@ -74,12 +74,13 @@ export function TrainingView() {
   useEffect(() => {
     setFeedback(null);
     setHint(false);
+    setHintUsed(false);
     setGrading(false);
     setFailedAttempt(false);
     setTriedFen(null);
     setExploreStep(null);
     setFreeExplore(null);
-  }, [item?.posKey, training.index]);
+  }, [item?.posKey, training.index, training.step]);
 
   const orientation = useMemo<'white' | 'black'>(() => {
     if (!item) return 'white';
@@ -212,6 +213,17 @@ export function TrainingView() {
     void analyzeFree(fen);
   };
 
+  const queueInfo = useMemo(() => {
+    if (!training.active && Object.keys(analyses).length > 0) {
+      return buildTrainingQueue(Object.values(analyses), games, undefined, undefined, trainingStats, undefined, dismissed);
+    }
+    return { items: [], categories: [] };
+  }, [training.active, analyses, games, trainingStats, dismissed]);
+
+  const untrainedCount = useMemo(() => {
+    return queueInfo.items.filter(i => (trainingStats[i.posKey]?.attempts ?? 0) === 0).length;
+  }, [queueInfo.items, trainingStats]);
+
   if (!training.active) {
     const canTrain = Object.keys(analyses).length > 0;
     return (
@@ -224,9 +236,22 @@ export function TrainingView() {
                 Replay the exact positions where you went wrong, most common mistake first. The board shows the position
                 <b> before</b> your mistake — find the better move. Positions you miss come back later in the session.
               </p>
-              <button className="primary big" onClick={() => startTraining()}>
-                ▶ Train all mistakes
-              </button>
+              <div className="row gap" style={{ justifyContent: 'center', marginTop: 12 }}>
+                {untrainedCount > 0 && untrainedCount < queueInfo.items.length ? (
+                  <>
+                    <button className="primary big" onClick={() => startTraining(undefined, undefined, undefined, true)}>
+                      ▶ Train {untrainedCount} untrained mistakes
+                    </button>
+                    <button className="big" onClick={() => startTraining()}>
+                      Train all ({queueInfo.items.length})
+                    </button>
+                  </>
+                ) : (
+                  <button className="primary big" onClick={() => startTraining()}>
+                    ▶ Train all mistakes ({queueInfo.items.length})
+                  </button>
+                )}
+              </div>
             </>
           ) : (
             <p className="muted">Analyze some games first — then come here to drill your mistakes.</p>
@@ -306,9 +331,24 @@ export function TrainingView() {
     return `${cp >= 0 ? '+' : ''}${(cp / 100).toFixed(1)} for you`;
   })();
 
-  const nextLabel = failedAttempt ? 'Next (comes back later)' : 'Next position →';
+  const isSolved = feedback ? feedback.outcome.result !== 'wrong' : false;
+  const isLastInQueue = training.queue.length <= 1;
+  const nextLabel = isSolved
+    ? isLastInQueue
+      ? 'Finish session 🎉'
+      : 'Next position →'
+    : isLastInQueue
+      ? 'Try again'
+      : 'Next (comes back later)';
+
   const onNext = () => {
-    const correct = !failedAttempt && feedback?.outcome.result !== 'wrong';
+    if (!feedback) return;
+    if (feedback.outcome.result === 'wrong' && isLastInQueue) {
+      setFeedback(null);
+      setTriedFen(null);
+      return;
+    }
+    const correct = feedback.outcome.result !== 'wrong';
     setFeedback(null);
     setTriedFen(null);
     setExploreStep(null);
@@ -338,6 +378,15 @@ export function TrainingView() {
           <span className="muted">
             · {item.phase} · {catCount}× overall · last time you played <b>{item.playedSan}</b>
           </span>
+          {trainingStats[item.posKey]?.attempts ? (
+            <span className="chip small" style={{ fontSize: '11px', padding: '2px 8px' }} title={`Trained ${trainingStats[item.posKey].attempts} time${trainingStats[item.posKey].attempts === 1 ? '' : 's'} (${trainingStats[item.posKey].correct} solved)`}>
+              previously trained ({trainingStats[item.posKey].correct}/{trainingStats[item.posKey].attempts})
+            </span>
+          ) : (
+            <span className="chip small" style={{ fontSize: '11px', padding: '2px 8px', opacity: 0.75 }}>
+              new position
+            </span>
+          )}
         </div>
         {item.reason && (
           <p className="muted small" style={{ marginTop: 2 }}>
@@ -386,14 +435,25 @@ export function TrainingView() {
                   <button className="primary" onClick={onNext}>
                     {nextLabel}
                   </button>
-                  <button
-                    onClick={() => {
-                      setFeedback(null);
-                      setTriedFen(null); // piece returns to its original square
-                    }}
-                  >
-                    ↻ Try again
-                  </button>
+                  {(!isLastInQueue || feedback.outcome.result !== 'wrong') && (
+                    <button
+                      onClick={() => {
+                        setFeedback(null);
+                        setTriedFen(null); // piece returns to its original square
+                      }}
+                    >
+                      ↻ Try again
+                    </button>
+                  )}
+                  {isLastInQueue && feedback.outcome.result === 'wrong' && (
+                    <button
+                      className="small-btn"
+                      onClick={() => void commitTraining({ correct: false, skipped: true })}
+                      title="Skip this position and finish the session"
+                    >
+                      Skip & finish
+                    </button>
+                  )}
                   {pv && pv.length > 1 && (
                     <button
                       onClick={() => {
@@ -494,7 +554,7 @@ export function TrainingView() {
                 </button>
               )}
               <button className="small-btn" onClick={() => void commitTraining({ correct: false, skipped: true })}>
-                Skip (comes back later)
+                {isLastInQueue ? 'Skip & finish' : 'Skip (comes back later)'}
               </button>
               <button className="small-btn" onClick={() => startFreeExplore(item.fen)}>
                 🔍 Explore

@@ -27,7 +27,8 @@ export function buildTrainingQueue(
   phaseFilter?: string,
   stats?: Record<string, TrainingStats>,
   pieceFilter?: string,
-  dismissed?: Record<string, unknown>
+  dismissed?: Record<string, unknown>,
+  untrainedOnly?: boolean
 ): { items: TrainingItem[]; categories: CategoryCount[] } {
   const byCat = new Map<Category, number>();
   const byPos = new Map<string, TrainingItem>();
@@ -41,6 +42,7 @@ export function buildTrainingQueue(
       if (categoryFilter && !categoryFilter.includes(ply.category)) continue;
       if (phaseFilter && ply.phase !== phaseFilter) continue;
       if (pieceFilter && ply.hungPiece !== pieceFilter) continue;
+      if (untrainedOnly && (stats?.[key]?.attempts ?? 0) > 0) continue;
       byCat.set(ply.category, (byCat.get(ply.category) ?? 0) + 1);
       const item: TrainingItem = {
         posKey: key,
