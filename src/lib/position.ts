@@ -53,12 +53,25 @@ export function replayGame(startFen: string | undefined, sans: string[]): { plie
 
 /** Convert a UCI move to SAN in the given position. Returns the raw UCI on failure. */
 export function uciToSan(fen: string, uci: string): string {
+  if (!uci) return '';
   try {
     const chess = newChess(fen);
     const mv = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4, 5) || undefined });
     return mv.san;
   } catch {
     return uci;
+  }
+}
+
+/** If `fen` has no legal moves (checkmate or stalemate), return its exact stm-relative score. */
+export function terminalEval(fen: string, mateBase: number): number | null {
+  try {
+    const chess = new Chess(fen);
+    if (chess.isCheckmate()) return -mateBase;
+    if (chess.isGameOver() || chess.moves().length === 0) return 0;
+    return null;
+  } catch {
+    return null;
   }
 }
 

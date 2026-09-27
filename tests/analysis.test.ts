@@ -43,7 +43,7 @@ class FakePool implements Partial<EnginePool> {
   alwaysFail = new Set<string>();
   failOnce = new Set<string>();
   failedOnce = new Set<string>();
-  lines = (fen: string): EngineLine[] => [{ uci: 'g1f3', cp: 30, pv: ['g1f3', 'e7e5'] }];
+  lines = (fen: string): EngineLine[] => [{ uci: 'g1f3', cp: 90, pv: ['g1f3', 'e7e5'] }];
 
   async analyze(fen: string): Promise<AnalyzeResult> {
     this.calls++;
@@ -125,6 +125,59 @@ describe('analyzeGames', () => {
     expect(res.partial).toBe(0);
     expect(pool.calls).toBeGreaterThanOrEqual(28); // 27 positions + 1 retry
     expect(persisted[0].plies.every(p => !p.evalFailed)).toBe(true);
+  });
+
+  it('retries at least 2 more times when a position fails twice before succeeding', async () => {
+    const startFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    let startAttempts = 0;
+    const pool = new FakePool();
+    const origAnalyze = pool.analyze.bind(pool);
+    pool.analyze = async (fen: string) => {
+      if (fen === startFen) {
+        startAttempts++;
+        if (startAttempts <= 2) {
+          pool.calls++;
+          throw new Error('transient engine hiccup');
+        }
+      }
+      return origAnalyze(fen);
+    };
+    const persisted: GameAnalysis[] = [];
+    const res = await analyzeGames(
+      { ...baseOpts, games: [makeGame('g1')], onGameAnalyzed: async a => persisted.push(a) },
+      pool as unknown as EnginePool
+    );
+    expect(startAttempts).toBe(3);
+    expect(res.partial).toBe(0);
+    expect(res.analyzed).toBe(1);
+    expect(persisted[0].partial).toBe(false);
+    expect(persisted[0].plies.every(p => !p.evalFailed)).toBe(true);
+  });
+
+  it('analyzes games ending in checkmate until the very end without marking them partial', async () => {
+    const matePgn = `[Event "Mate"]
+[Site "https://lichess.org/mate1"]
+[Date "2026.01.02"]
+[White "Tester"]
+[Black "Opponent"]
+[Result "1-0"]
+[TimeControl "300+0"]
+
+1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0`;
+    const mateGame = { ...makeGame('mate1'), pgn: matePgn, playerResult: 'win' as const };
+    const pool = new FakePool();
+    const persisted: GameAnalysis[] = [];
+    const res = await analyzeGames(
+      { ...baseOpts, games: [mateGame], onGameAnalyzed: async a => persisted.push(a) },
+      pool as unknown as EnginePool
+    );
+    expect(res.analyzed).toBe(1);
+    expect(res.partial).toBe(0);
+    expect(persisted[0].partial).toBe(false);
+    expect(persisted[0].plies).toHaveLength(7);
+    expect(persisted[0].plies.every(p => !p.evalFailed)).toBe(true);
+    // Final move (Qxf7#) delivered mate -> 0 cpl
+    expect(persisted[0].plies[6].cpl).toBe(0);
   });
 
   it('stops quickly on cancel and does not persist unfinished games', async () => {

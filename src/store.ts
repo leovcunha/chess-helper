@@ -80,7 +80,7 @@ interface AppStore {
 const DEFAULT_SETTINGS: EngineSettings = {
   depth: 13,
   mpv: 3,
-  thresholds: { minCpl: 50 },
+  thresholds: { minCpl: 120 },
 };
 
 const DEFAULT_FILTERS: ImportFilters = {
@@ -94,11 +94,17 @@ const DEFAULT_FILTERS: ImportFilters = {
   ratedOnly: true,
 };
 
-// older persisted settings had {inaccuracy, mistake, blunder} — normalize to the
-// current shape so minCpl is never undefined
+// older persisted settings had {inaccuracy, mistake, blunder} or the old minCpl=50
+// inaccuracy threshold — normalize so only genuine errors/blunders are included
 export function normalizeSettings(s: EngineSettings): EngineSettings {
   const t = (s?.thresholds ?? {}) as Record<string, number | undefined>;
-  const minCpl = typeof t.minCpl === 'number' ? t.minCpl : typeof t.inaccuracy === 'number' ? t.inaccuracy : DEFAULT_SETTINGS.thresholds.minCpl;
+  const rawMinCpl =
+    typeof t.minCpl === 'number'
+      ? t.minCpl
+      : typeof t.mistake === 'number'
+        ? t.mistake
+        : DEFAULT_SETTINGS.thresholds.minCpl;
+  const minCpl = rawMinCpl <= 75 ? DEFAULT_SETTINGS.thresholds.minCpl : rawMinCpl;
   return {
     depth: typeof s?.depth === 'number' ? s.depth : DEFAULT_SETTINGS.depth,
     mpv: typeof s?.mpv === 'number' ? s.mpv : DEFAULT_SETTINGS.mpv,
@@ -254,7 +260,7 @@ export const useStore = create<AppStore>()(
         // skip games already analyzed by THIS engine at this exact config (and schema)
         const needsWork = (g: GameRecord) => {
           const existing = analyses[g.key];
-          return !existing || existing.engineKey !== engineKey;
+          return !existing || existing.engineKey !== engineKey || Boolean(existing.partial);
         };
         const list = reanalyzeAll ? all : all.filter(needsWork);
         const skipped = all.length - list.length;

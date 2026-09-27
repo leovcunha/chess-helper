@@ -1,8 +1,8 @@
 import type { BestLine, GameAnalysis, GameRecord, PlyAnalysis } from '../types';
-import { EnginePool, getEnginePool, isMateScore } from './engine';
+import { EnginePool, getEnginePool, isMateScore, MATE_BASE } from './engine';
 import { ANALYSIS_SCHEMA, calculateGameAccuracy, chesscomToLichess, classifyMove, estimateElo, lichessToChesscom, moveAccuracy } from './classify';
 import { getGameRatings, parseHeaders, parseMovetext } from './pgn';
-import { replayGame, uciToSan } from './position';
+import { replayGame, terminalEval, uciToSan } from './position';
 
 export interface AnalysisProgress {
   phase: 'loading-engine' | 'analyzing' | 'done';
@@ -55,8 +55,8 @@ interface Task {
  * Analyze games with a bounded, abortable work queue: exactly `poolSize`
  * searches are ever in flight, so Cancel takes effect immediately and memory
  * stays flat no matter how many games were imported. Each failed search is
- * retried once; positions that still fail are marked on the game (partial)
- * instead of silently counting as perfect moves.
+ * retried at least twice (3 attempts total), plus a game-level recovery pass
+ * before any game can be marked partial.
  */
 export async function analyzeGames(opts: AnalyzeOptions, poolOverride?: EnginePool): Promise<AnalysisResult> {
   const pool = poolOverride ?? (await getEnginePool());
@@ -106,6 +106,30 @@ export async function analyzeGames(opts: AnalyzeOptions, poolOverride?: EnginePo
       pliesTotal: tasksTotal,
     });
 
+  const evalFenWithRetries = async (fen: string, attempts: number): Promise<PositionEval | null> => {
+    const termScore = terminalEval(fen, MATE_BASE);
+    if (termScore !== null) {
+      return { lines: [], bestCp: termScore };
+    }
+    let r: Awaited<ReturnType<EnginePool['analyze']>> | null = null;
+    for (let attempt = 0; attempt < attempts && !r; attempt++) {
+      if (opts.shouldCancel()) break;
+      try {
+        r = await pool.analyze(fen, opts.depth, opts.mpv, 15_000);
+      } catch {
+        r = null;
+        if (attempt + 1 < attempts) {
+          await new Promise(res => setTimeout(res, 60 * (attempt + 1)));
+        }
+      }
+    }
+    if (!r) return null;
+    return {
+      lines: r.lines.map(l => ({ ...l, san: uciToSan(fen, l.uci) })),
+      bestCp: r.lines[0].cp,
+    };
+  };
+
   let analyzed = 0;
   let partial = 0;
   const persistedFlag = parsed.map(() => false);
@@ -113,6 +137,16 @@ export async function analyzeGames(opts: AnalyzeOptions, poolOverride?: EnginePo
     if (persistedFlag[gi]) return;
     persistedFlag[gi] = true;
     const g = parsed[gi]!;
+    if (failedEvals[gi].size > 0 && !opts.shouldCancel()) {
+      for (const fenIdx of [...failedEvals[gi]]) {
+        if (opts.shouldCancel()) break;
+        const recovered = await evalFenWithRetries(g.fens[fenIdx], 2);
+        if (recovered) {
+          results[gi][fenIdx] = recovered;
+          failedEvals[gi].delete(fenIdx);
+        }
+      }
+    }
     const analysis = buildAnalysis(g, results[gi], failedEvals[gi], engineKey, opts);
     await opts.onGameAnalyzed(analysis);
     if (analysis.partial) partial++;
@@ -124,21 +158,9 @@ export async function analyzeGames(opts: AnalyzeOptions, poolOverride?: EnginePo
   const runTask = async (t: Task): Promise<void> => {
     const g = parsed[t.gameIdx]!;
     const fen = g.fens[t.fenIdx];
-    let r: Awaited<ReturnType<EnginePool['analyze']>> | null = null;
-    for (let attempt = 0; attempt < 2 && !r; attempt++) {
-      if (opts.shouldCancel()) break;
-      try {
-        r = await pool.analyze(fen, opts.depth, opts.mpv, 15_000);
-      } catch {
-        r = null;
-        if (attempt === 0) await new Promise(res => setTimeout(res, 200)); // brief pause before the retry
-      }
-    }
-    if (r) {
-      results[t.gameIdx][t.fenIdx] = {
-        lines: r.lines.map(l => ({ ...l, san: uciToSan(fen, l.uci) })),
-        bestCp: r.lines[0].cp,
-      };
+    const evalRes = await evalFenWithRetries(fen, 3); // 1 initial attempt + 2 retries
+    if (evalRes) {
+      results[t.gameIdx][t.fenIdx] = evalRes;
     } else {
       failedEvals[t.gameIdx].add(t.fenIdx);
     }

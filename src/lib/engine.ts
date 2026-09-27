@@ -216,18 +216,19 @@ export class ChessEngine {
 
       this.lineHandler = line => {
         if (this.staleLatch) return;
-        if (line.startsWith('info') && line.includes(' pv ') && !line.includes('upperbound') && !line.includes('lowerbound')) {
+        if (line.startsWith('info') && !line.includes('upperbound') && !line.includes('lowerbound')) {
           const depthM = /(?:^|\s)depth (\d+)/.exec(line);
           const mpvM = /(?:^|\s)multipv (\d+)/.exec(line);
           const scoreM = /(?:^|\s)score (cp|mate) (-?\d+)/.exec(line);
           const pvIdx = line.indexOf(' pv ');
-          if (!depthM || !scoreM || pvIdx === -1) return;
+          if (!depthM || !scoreM) return;
           const d = parseInt(depthM[1], 10);
+          if (pvIdx === -1 && d !== 0) return;
           const k = mpvM ? parseInt(mpvM[1], 10) : 1;
           if (d < maxDepth && (lines.get(k)?.depth ?? 0) >= d) return;
           const mate = scoreM[1] === 'mate' ? parseInt(scoreM[2], 10) : null;
           const cp = scoreM[1] === 'cp' ? parseInt(scoreM[2], 10) : null;
-          const pv = line.slice(pvIdx + 4).trim().split(/\s+/);
+          const pv = pvIdx !== -1 ? line.slice(pvIdx + 4).trim().split(/\s+/).filter(Boolean) : [];
           maxDepth = Math.max(maxDepth, d);
           lines.set(k, { depth: d, cp, mate, pv });
         } else if (line.startsWith('bestmove')) {
@@ -236,12 +237,12 @@ export class ChessEngine {
           for (const k of [...lines.keys()].sort((a, b) => a - b)) {
             const e = lines.get(k)!;
             if (e.depth !== maxDepth) continue;
-            out.push({ uci: e.pv[0], cp: encodeScore(e.mate, e.cp), pv: e.pv.slice(0, 10) });
+            out.push({ uci: e.pv[0] ?? '', cp: encodeScore(e.mate, e.cp), pv: e.pv.slice(0, 10) });
           }
           if (out.length === 0) {
             // fall back to whatever the deepest single line was
             for (const e of lines.values()) {
-              out.push({ uci: e.pv[0], cp: encodeScore(e.mate, e.cp), pv: e.pv.slice(0, 10) });
+              out.push({ uci: e.pv[0] ?? '', cp: encodeScore(e.mate, e.cp), pv: e.pv.slice(0, 10) });
               break;
             }
           }

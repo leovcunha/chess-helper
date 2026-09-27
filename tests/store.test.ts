@@ -33,9 +33,12 @@ describe('persisted-shape normalization', () => {
     expect(kept.chesscomMax).toBe(30);
   });
 
-  it('normalizes old threshold shapes', () => {
+  it('normalizes old threshold shapes and migrates inaccuracy minCpl to mistake threshold', () => {
     const s = normalizeSettings({ depth: 13, mpv: 3, thresholds: { inaccuracy: 75, mistake: 150, blunder: 400 } } as unknown as Parameters<typeof normalizeSettings>[0]);
-    expect(s.thresholds.minCpl).toBe(75);
+    expect(s.thresholds.minCpl).toBe(150);
+
+    const legacy50 = normalizeSettings({ depth: 13, mpv: 3, thresholds: { minCpl: 50 } });
+    expect(legacy50.thresholds.minCpl).toBe(120);
   });
 });
 
