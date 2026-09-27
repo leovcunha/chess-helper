@@ -25,10 +25,12 @@ function pick(baseDir, js, wasm, kind, label) {
 const sf18 = 'node_modules/stockfish/bin';
 const sf10 = 'node_modules/stockfish-legacy/src';
 
-// Priority: Stockfish 18 single-threaded full NNUE (net embedded in the wasm,
-// no SharedArrayBuffer needed), then the lite net variant for memory-tight
-// machines, then the ancient SF10 builds as a safety net.
-pick(sf18, 'stockfish-18-single.js', 'stockfish-18-single.wasm', 'wasm', 'Stockfish 18 (WASM)');
+// Priority: Stockfish 18 single-threaded full NNUE locally (113 MB), or the
+// 7.3 MB lite NNUE net first on CI/GitHub Pages so CDN downloads don't time out,
+// followed by the SF10 builds as a safety net.
+if (!process.env.GITHUB_ACTIONS) {
+  pick(sf18, 'stockfish-18-single.js', 'stockfish-18-single.wasm', 'wasm', 'Stockfish 18 (WASM)');
+}
 pick(sf18, 'stockfish-18-lite-single.js', 'stockfish-18-lite-single.wasm', 'wasm', 'Stockfish 18 lite (WASM)');
 pick(sf10, 'stockfish.js', 'stockfish.wasm', 'wasm', 'Stockfish 10 (WASM)');
 pick(sf10, 'stockfish.asm.js', null, 'asm', 'Stockfish 10 (asm.js fallback)');
