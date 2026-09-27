@@ -86,11 +86,15 @@ export interface ClassifyResult {
 }
 
 const WINNING_CP = 250; // "clearly winning" threshold for the lost-win theme
+const MIN_ERROR_CPL = 100; // hard floor: drops under 1.0 pawn are imprecisions, never errors/blunders
+const MIN_POSITIONAL_CPL = 150; // pure positional errors (no material swing) require >= 1.5 pawns drop
+const MIN_WIN_PERCENT_DROP = 8; // minimum win-probability loss (%) to count as a real error
 const BACK_RANK_MAJOR = new Set(['r', 'q']);
 
 /**
  * Classify a move given engine evals before/after. `evalBefore`/`evalAfterPlayer`
  * are from the mover's perspective (cp where mate is encoded as ±(MATE_BASE - n)).
+ * Imprecisions / minor engine disagreements are excluded — only genuine errors and blunders are mapped.
  */
 export function classifyMove(input: ClassifyInput): ClassifyResult {
   const { evalBefore, evalAfterPlayer, playedUci, bestUci, bestPvReply, opponentBestUci, fenBefore, fenAfter, ply, minCpl } = input;
@@ -100,7 +104,8 @@ export function classifyMove(input: ClassifyInput): ClassifyResult {
   const oppSan = uciToSan(fenAfter, opponentBestUci);
   const bestSan = uciToSan(fenBefore, bestUci);
 
-  if (cpl < minCpl) return out;
+  const effectiveMinCpl = Math.max(MIN_ERROR_CPL, minCpl);
+  if (cpl < effectiveMinCpl) return out;
 
   // In dead-lost positions small drops are noise — don't map them.
   if (evalBefore <= -950 && !isMateScore(evalBefore) && cpl < 500) return out;
@@ -127,6 +132,10 @@ export function classifyMove(input: ClassifyInput): ClassifyResult {
     out.reason = `After your move the opponent plays ${oppSan} and forces mate in ${mateDistance(evalAfterPlayer)}.`;
     return out;
   }
+
+  // Filter out imprecisions where win probability barely changes (e.g. +6.0 -> +4.2 when already winning)
+  const wpDrop = winPercent(evalBefore) - winPercent(evalAfterPlayer);
+  if (wpDrop < MIN_WIN_PERCENT_DROP) return out;
 
   // 3. Hung a piece: after our move, the opponent's best reply captures material.
   //    Compare BOTH sides of the exchange — what our move captured (myGain) minus
@@ -168,10 +177,12 @@ export function classifyMove(input: ClassifyInput): ClassifyResult {
     return out;
   }
 
-  // 6. Everything else: an eval drop with no material swing.
+  // 6. Positional error: only flag genuine errors/blunders (>= 1.5 pawns drop), never minor imprecisions.
+  if (cpl < MIN_POSITIONAL_CPL) return out;
+
   out.category = 'positional';
-  out.confidence = 'low';
-  out.reason = `The engine sees a ${(cpl / 100).toFixed(1)}-pawn drop with no material change — could be a real positional loss or eval noise at this depth.`;
+  out.confidence = cpl >= 250 ? 'high' : 'medium';
+  out.reason = `The engine sees a ${(cpl / 100).toFixed(1)}-pawn positional drop without immediate material loss.`;
   return out;
 }
 
@@ -595,7 +606,7 @@ export function estimateElo(accuracy: number, options?: EstimateEloOptions): num
 
 /* ---------------- schema migration ---------------- */
 
-export const ANALYSIS_SCHEMA = 6;
+export const ANALYSIS_SCHEMA = 7;
 
 /**
  * Re-run the themed classifier over an existing analysis without touching the

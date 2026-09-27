@@ -298,8 +298,22 @@ describe('classifyMove', () => {
     expect(res.category).toBe('missed-tactic');
   });
 
-  it('classifies a silent eval drop as a positional error', () => {
+  it('classifies a substantial silent eval drop as a positional error', () => {
     const res = classifyMove({
+      ...base,
+      fenBefore: AFTER_1E4E5,
+      fenAfter: AFTER_QH5,
+      evalBefore: 30,
+      evalAfterPlayer: -150,
+      playedUci: 'b1c3',
+      bestUci: 'g1f3',
+      opponentBestUci: 'g8f6',
+    });
+    expect(res.category).toBe('positional');
+  });
+
+  it('excludes minor imprecisions (e.g. 60-95 cp drops or <150 cp quiet positional drift)', () => {
+    const minorDrop = classifyMove({
       ...base,
       fenBefore: AFTER_1E4E5,
       fenAfter: AFTER_QH5,
@@ -309,7 +323,21 @@ describe('classifyMove', () => {
       bestUci: 'g1f3',
       opponentBestUci: 'g8f6',
     });
-    expect(res.category).toBe('positional');
+    expect(minorDrop.category).toBeUndefined();
+  });
+
+  it('excludes cp drops in already-crushing positions where win probability barely changes', () => {
+    const alreadyWinning = classifyMove({
+      ...base,
+      fenBefore: AFTER_1E4E5,
+      fenAfter: AFTER_QH5,
+      evalBefore: 900,
+      evalAfterPlayer: 700,
+      playedUci: 'b1c3',
+      bestUci: 'g1f3',
+      opponentBestUci: 'g8f6',
+    });
+    expect(alreadyWinning.category).toBeUndefined();
   });
 
   it('flags lost winning positions', () => {
