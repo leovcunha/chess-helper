@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import type { Category, Phase, TrainingStats } from '../types';
 import { CATEGORY_META, CATEGORY_ORDER } from '../lib/classify';
+import { buildChartGeometry, computeProgressReport } from '../lib/progress';
 import { buildTrainingQueue, posKeyOf } from '../lib/training';
 
 const PHASES: Phase[] = ['opening', 'middlegame', 'endgame'];
@@ -108,6 +109,12 @@ export function Dashboard() {
     return s;
   }, [analyses, games, trainingStats, dismissed]);
 
+  const progress = useMemo(
+    () => computeProgressReport(analyses, games, trainingStats, dismissed),
+    [analyses, games, trainingStats, dismissed]
+  );
+  const chart = useMemo(() => buildChartGeometry(progress.chartBuckets), [progress.chartBuckets]);
+
   if (stats.games === 0) {
     return (
       <div className="view">
@@ -144,6 +151,222 @@ export function Dashboard() {
           <div className="stat-label">mistakes mapped</div>
         </div>
       </div>
+
+      <section className="card progress-card">
+        <div className="row between wrap gap">
+          <div>
+            <h2>Weekly progress &amp; training effectiveness</h2>
+            <p className="muted small" style={{ margin: '2px 0 0' }}>
+              {progress.subline}
+            </p>
+          </div>
+          <span className={`verdict-pill verdict-${progress.verdict}`}>
+            {progress.verdict === 'improving'
+              ? '▲ Improving'
+              : progress.verdict === 'needs-work'
+                ? '▼ Recent dip'
+                : progress.verdict === 'steady'
+                  ? '● Steady'
+                  : '◌ Building baseline'}
+          </span>
+        </div>
+
+        <div className="progress-headline">{progress.headline}</div>
+
+        <div className="progress-metrics-grid">
+          <div className="progress-metric">
+            <div className="progress-metric-label">Recent Accuracy</div>
+            <div className="progress-metric-value">
+              {progress.recentAccuracy}%
+              {progress.totalGames >= 2 && (
+                <span className={`delta-badge ${progress.accuracyDelta > 0 ? 'good' : progress.accuracyDelta < 0 ? 'bad' : 'muted'}`}>
+                  {progress.accuracyDelta > 0 ? `+${progress.accuracyDelta}%` : `${progress.accuracyDelta}%`}
+                </span>
+              )}
+            </div>
+            <div className="progress-metric-sub muted small">Prior baseline: {progress.priorAccuracy}%</div>
+          </div>
+
+          <div className="progress-metric">
+            <div className="progress-metric-label">Mistakes / 40 Moves</div>
+            <div className="progress-metric-value">
+              {progress.recentMistakesPer40}
+              {progress.totalGames >= 2 && progress.mistakesDeltaPct !== 0 && (
+                <span className={`delta-badge ${progress.mistakesDeltaPct < 0 ? 'good' : 'bad'}`}>
+                  {progress.mistakesDeltaPct > 0 ? `+${progress.mistakesDeltaPct}%` : `${progress.mistakesDeltaPct}%`}
+                </span>
+              )}
+            </div>
+            <div className="progress-metric-sub muted small">
+              {progress.recentMistakesPerGame}/game (was {progress.priorMistakesPerGame}/game)
+            </div>
+          </div>
+
+          <div className="progress-metric">
+            <div className="progress-metric-label">Training Coverage</div>
+            <div className="progress-metric-value">
+              {progress.trainingCoveragePct}%
+              <span className="delta-badge muted">
+                {progress.trainedUniqueMistakes}/{progress.totalUniqueMistakes}
+              </span>
+            </div>
+            <div className="progress-metric-sub muted small">
+              {progress.masteryPct}% mastered ({progress.masteredUniqueMistakes} solved cleanly)
+            </div>
+          </div>
+
+          <div className="progress-metric">
+            <div className="progress-metric-label">
+              {progress.drilledCategoryDeltaPct !== null ? 'Drilled Theme Impact' : 'Clean Game Rate'}
+            </div>
+            <div className="progress-metric-value">
+              {progress.drilledCategoryDeltaPct !== null ? (
+                <>
+                  {progress.drilledCategoryDeltaPct > 0
+                    ? `+${progress.drilledCategoryDeltaPct}%`
+                    : `${progress.drilledCategoryDeltaPct}%`}
+                  <span className={`delta-badge ${progress.drilledCategoryDeltaPct <= 0 ? 'good' : 'bad'}`}>
+                    {progress.drilledCategoryDeltaPct <= 0 ? 'fewer errors' : 'more errors'}
+                  </span>
+                </>
+              ) : (
+                <>{progress.cleanGamePct}%</>
+              )}
+            </div>
+            <div className="progress-metric-sub muted small">
+              {progress.cleanGamePct}% of games have ≤ 1 mistake
+            </div>
+          </div>
+        </div>
+
+        {chart.nodes.length >= 2 && (
+          <div className="progress-chart-wrap">
+            <div className="progress-chart-legend small muted">
+              <span>
+                <span className="legend-dot acc" /> Avg Accuracy (%)
+              </span>
+              <span>
+                <span className="legend-dot err" /> Mistakes / 40 moves
+              </span>
+              <span>
+                <span className="legend-bar" /> Trained exercises
+              </span>
+            </div>
+            <svg
+              className="progress-chart-svg"
+              viewBox={`0 0 ${chart.width} ${chart.height}`}
+              role="img"
+              aria-label="Weekly accuracy, mistakes, and training progression chart"
+            >
+              {/* Subtle horizontal grid lines */}
+              {[0, 0.5, 1].map(frac => {
+                const y = chart.padTop + frac * chart.plotHeight;
+                return (
+                  <line
+                    key={frac}
+                    x1={chart.padLeft}
+                    y1={y}
+                    x2={chart.width - chart.padRight}
+                    y2={y}
+                    stroke="#2c323d"
+                    strokeDasharray="3 3"
+                    strokeWidth="1"
+                  />
+                );
+              })}
+
+              {/* Trained exercises bars */}
+              {chart.nodes.map(n =>
+                n.barH > 0 ? (
+                  <g key={`bar-${n.key}`}>
+                    <rect
+                      x={n.barX}
+                      y={n.barY}
+                      width={n.barW}
+                      height={n.barH}
+                      rx="4"
+                      fill="rgba(138, 180, 248, 0.22)"
+                      stroke="rgba(138, 180, 248, 0.45)"
+                      strokeWidth="1"
+                    >
+                      <title>{`${n.label}: ${n.trainedExercises} trained`}</title>
+                    </rect>
+                  </g>
+                ) : null
+              )}
+
+              {/* Mistakes per 40 moves line */}
+              <polyline
+                fill="none"
+                stroke="#e5484d"
+                strokeWidth="2"
+                strokeDasharray="5 3"
+                points={chart.mistakePoints}
+              />
+
+              {/* Accuracy line */}
+              <polyline fill="none" stroke="#4ade80" strokeWidth="2.5" points={chart.accuracyPoints} />
+
+              {/* Data points & labels */}
+              {chart.nodes.map(n => (
+                <g key={n.key}>
+                  <circle cx={n.x} cy={n.errY} r="3.5" fill="#e5484d">
+                    <title>{`${n.label}: ${n.mistakesPer40} mistakes / 40 moves`}</title>
+                  </circle>
+                  <text x={n.x} y={n.errY + 13} textAnchor="middle" className="chart-val-err">
+                    {n.mistakesPer40}
+                  </text>
+
+                  <circle cx={n.x} cy={n.accY} r="4" fill="#4ade80" stroke="#14171c" strokeWidth="1.5">
+                    <title>{`${n.label} (${n.sublabel}): ${n.avgAccuracy}% accuracy`}</title>
+                  </circle>
+                  <text x={n.x} y={Math.max(12, n.accY - 8)} textAnchor="middle" className="chart-val-acc">
+                    {n.avgAccuracy}%
+                  </text>
+
+                  <text x={n.x} y={chart.baselineY + 16} textAnchor="middle" className="chart-axis-label">
+                    {n.label}
+                  </text>
+                  <text x={n.x} y={chart.baselineY + 29} textAnchor="middle" className="chart-axis-sub">
+                    {n.sublabel}
+                    {n.trainedExercises > 0 ? ` · ${n.trainedExercises}t` : ''}
+                  </text>
+                </g>
+              ))}
+            </svg>
+          </div>
+        )}
+
+        {progress.categoryEffectiveness.length > 0 && progress.totalGames >= 2 && (
+          <div className="effectiveness-table-wrap">
+            <div className="muted small" style={{ marginBottom: 6, fontWeight: 600 }}>
+              Theme-by-theme training vs. mistake rate (earlier vs. recent games)
+            </div>
+            <div className="effectiveness-rows">
+              {progress.categoryEffectiveness.slice(0, 4).map(ce => (
+                <div key={ce.category} className="effectiveness-row">
+                  <span className="effectiveness-cat" style={{ color: ce.color }}>
+                    {ce.label}
+                  </span>
+                  <span className="muted small">
+                    {ce.trainedPositions}/{ce.totalPositions} trained ({ce.trainedPct}%)
+                  </span>
+                  <span className="effectiveness-trend small">
+                    {ce.priorPerGame}/g → <strong>{ce.recentPerGame}/g</strong>{' '}
+                    {ce.deltaPerGame < 0 ? (
+                      <span className="good">({ce.deltaPerGame}/g)</span>
+                    ) : ce.deltaPerGame > 0 ? (
+                      <span className="bad">(+{ce.deltaPerGame}/g)</span>
+                    ) : (
+                      <span className="muted">(0.0/g)</span>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="card">
         <div className="row between">
