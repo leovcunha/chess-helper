@@ -747,7 +747,7 @@ button.danger {
 .progress-chart-svg {
   width: 100%;
   height: auto;
-  max-height: 200px;
+  max-height: 220px;
   display: block;
 }
 
@@ -773,18 +773,24 @@ button.danger {
   font-size: 9.5px;
 }
 
+.chart-axis-trained {
+  fill: var(--accent-2);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
 .effectiveness-table-wrap {
   border-top: 1px solid var(--border);
-  padding-top: 10px;
+  padding-top: 12px;
 }
 
 .effectiveness-rows {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 6px 14px;
+  gap: 10px 14px;
 }
 
-@media (max-width: 700px) {
+@media (max-width: 780px) {
   .effectiveness-rows {
     grid-template-columns: 1fr;
   }
@@ -792,25 +798,65 @@ button.danger {
 
 .effectiveness-row {
   display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 13px;
+}
+
+.effectiveness-header {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 11px;
+  flex-wrap: wrap;
 }
 
 .effectiveness-cat {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 13.5px;
 }
 
-.effectiveness-trend {
-  margin-left: auto;
+.effectiveness-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.effectiveness-detail {
+  line-height: 1.35;
+}
+
+.impact-pill {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.impact-pill.good {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: rgba(74, 222, 128, 0.4);
+  color: var(--good);
+}
+
+.impact-pill.bad {
+  background: rgba(229, 72, 77, 0.12);
+  border-color: rgba(229, 72, 77, 0.4);
+  color: var(--bad);
+}
+
+.impact-pill.info {
+  background: rgba(138, 180, 248, 0.12);
+  border-color: rgba(138, 180, 248, 0.4);
+  color: var(--accent-2);
 }
 
 footer {
   margin-top: 26px;
 }
+
 

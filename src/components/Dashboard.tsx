@@ -188,7 +188,7 @@ export function Dashboard() {
           </div>
 
           <div className="progress-metric">
-            <div className="progress-metric-label">Mistakes / 40 Moves</div>
+            <div className="progress-metric-label">Mistakes per 40 Moves</div>
             <div className="progress-metric-value">
               {progress.recentMistakesPer40}
               {progress.totalGames >= 2 && progress.mistakesDeltaPct !== 0 && (
@@ -198,7 +198,7 @@ export function Dashboard() {
               )}
             </div>
             <div className="progress-metric-sub muted small">
-              {progress.recentMistakesPerGame}/game (was {progress.priorMistakesPerGame}/game)
+              {progress.recentMistakesPerGame} mistakes per game (was {progress.priorMistakesPerGame} per game)
             </div>
           </div>
 
@@ -207,17 +207,17 @@ export function Dashboard() {
             <div className="progress-metric-value">
               {progress.trainingCoveragePct}%
               <span className="delta-badge muted">
-                {progress.trainedUniqueMistakes}/{progress.totalUniqueMistakes}
+                {progress.trainedUniqueMistakes} of {progress.totalUniqueMistakes}
               </span>
             </div>
             <div className="progress-metric-sub muted small">
-              {progress.masteryPct}% mastered ({progress.masteredUniqueMistakes} solved cleanly)
+              {progress.masteryPct}% solved ({progress.masteredUniqueMistakes} positions mastered)
             </div>
           </div>
 
           <div className="progress-metric">
             <div className="progress-metric-label">
-              {progress.drilledCategoryDeltaPct !== null ? 'Drilled Theme Impact' : 'Clean Game Rate'}
+              {progress.drilledCategoryDeltaPct !== null ? 'Post-Training Theme Impact' : 'Clean Game Rate'}
             </div>
             <div className="progress-metric-value">
               {progress.drilledCategoryDeltaPct !== null ? (
@@ -226,7 +226,7 @@ export function Dashboard() {
                     ? `+${progress.drilledCategoryDeltaPct}%`
                     : `${progress.drilledCategoryDeltaPct}%`}
                   <span className={`delta-badge ${progress.drilledCategoryDeltaPct <= 0 ? 'good' : 'bad'}`}>
-                    {progress.drilledCategoryDeltaPct <= 0 ? 'fewer errors' : 'more errors'}
+                    {progress.drilledCategoryDeltaPct <= 0 ? 'fewer mistakes/game' : 'more mistakes/game'}
                   </span>
                 </>
               ) : (
@@ -239,17 +239,17 @@ export function Dashboard() {
           </div>
         </div>
 
-        {chart.nodes.length >= 2 && (
+        {chart.nodes.length >= 1 && (
           <div className="progress-chart-wrap">
             <div className="progress-chart-legend small muted">
               <span>
-                <span className="legend-dot acc" /> Avg Accuracy (%)
+                <span className="legend-dot acc" /> Avg Accuracy (%) — by week played
               </span>
               <span>
-                <span className="legend-dot err" /> Mistakes / 40 moves
+                <span className="legend-dot err" /> Mistakes per 40 moves — by week played
               </span>
               <span>
-                <span className="legend-bar" /> Trained exercises
+                <span className="legend-bar" /> Exercises trained — by week trained
               </span>
             </div>
             <svg
@@ -275,7 +275,7 @@ export function Dashboard() {
                 );
               })}
 
-              {/* Trained exercises bars */}
+              {/* Trained exercises bars (by the week the user actually trained) */}
               {chart.nodes.map(n =>
                 n.barH > 0 ? (
                   <g key={`bar-${n.key}`}>
@@ -285,82 +285,148 @@ export function Dashboard() {
                       width={n.barW}
                       height={n.barH}
                       rx="4"
-                      fill="rgba(138, 180, 248, 0.22)"
-                      stroke="rgba(138, 180, 248, 0.45)"
+                      fill="rgba(138, 180, 248, 0.24)"
+                      stroke="rgba(138, 180, 248, 0.55)"
                       strokeWidth="1"
                     >
-                      <title>{`${n.label}: ${n.trainedExercises} trained`}</title>
+                      <title>{`Week of ${n.label}: ${n.trainedExercises} exercises trained`}</title>
                     </rect>
                   </g>
                 ) : null
               )}
 
               {/* Mistakes per 40 moves line */}
-              <polyline
-                fill="none"
-                stroke="#e5484d"
-                strokeWidth="2"
-                strokeDasharray="5 3"
-                points={chart.mistakePoints}
-              />
+              {chart.mistakePoints.includes(' ') && (
+                <polyline
+                  fill="none"
+                  stroke="#e5484d"
+                  strokeWidth="2"
+                  strokeDasharray="5 3"
+                  points={chart.mistakePoints}
+                />
+              )}
 
               {/* Accuracy line */}
-              <polyline fill="none" stroke="#4ade80" strokeWidth="2.5" points={chart.accuracyPoints} />
+              {chart.accuracyPoints.includes(' ') && (
+                <polyline fill="none" stroke="#4ade80" strokeWidth="2.5" points={chart.accuracyPoints} />
+              )}
 
-              {/* Data points & labels */}
+              {/* Data points & clear axis labels */}
               {chart.nodes.map(n => (
                 <g key={n.key}>
-                  <circle cx={n.x} cy={n.errY} r="3.5" fill="#e5484d">
-                    <title>{`${n.label}: ${n.mistakesPer40} mistakes / 40 moves`}</title>
-                  </circle>
-                  <text x={n.x} y={n.errY + 13} textAnchor="middle" className="chart-val-err">
-                    {n.mistakesPer40}
-                  </text>
+                  {n.errY !== null && n.mistakesPer40 !== null && (
+                    <>
+                      <circle cx={n.x} cy={n.errY} r="3.5" fill="#e5484d">
+                        <title>{`Week of ${n.label}: ${n.mistakesPer40} mistakes per 40 moves (${n.mistakesPerGame} per game)`}</title>
+                      </circle>
+                      <text x={n.x} y={n.errY + 13} textAnchor="middle" className="chart-val-err">
+                        {n.mistakesPer40} err/40m
+                      </text>
+                    </>
+                  )}
 
-                  <circle cx={n.x} cy={n.accY} r="4" fill="#4ade80" stroke="#14171c" strokeWidth="1.5">
-                    <title>{`${n.label} (${n.sublabel}): ${n.avgAccuracy}% accuracy`}</title>
-                  </circle>
-                  <text x={n.x} y={Math.max(12, n.accY - 8)} textAnchor="middle" className="chart-val-acc">
-                    {n.avgAccuracy}%
-                  </text>
+                  {n.accY !== null && n.avgAccuracy !== null && (
+                    <>
+                      <circle cx={n.x} cy={n.accY} r="4" fill="#4ade80" stroke="#14171c" strokeWidth="1.5">
+                        <title>{`Week of ${n.label} (${n.gamesCount} games): ${n.avgAccuracy}% avg accuracy`}</title>
+                      </circle>
+                      <text x={n.x} y={Math.max(12, n.accY - 8)} textAnchor="middle" className="chart-val-acc">
+                        {n.avgAccuracy}%
+                      </text>
+                    </>
+                  )}
 
-                  <text x={n.x} y={chart.baselineY + 16} textAnchor="middle" className="chart-axis-label">
-                    {n.label}
+                  <text x={n.x} y={chart.baselineY + 15} textAnchor="middle" className="chart-axis-label">
+                    Week of {n.label}
                   </text>
-                  <text x={n.x} y={chart.baselineY + 29} textAnchor="middle" className="chart-axis-sub">
-                    {n.sublabel}
-                    {n.trainedExercises > 0 ? ` · ${n.trainedExercises}t` : ''}
+                  <text x={n.x} y={chart.baselineY + 28} textAnchor="middle" className="chart-axis-sub">
+                    {n.gamesCount === 0
+                      ? 'No games played'
+                      : `${n.gamesCount} ${n.gamesCount === 1 ? 'game' : 'games'}`}
                   </text>
+                  {n.trainedExercises > 0 && (
+                    <text x={n.x} y={chart.baselineY + 41} textAnchor="middle" className="chart-axis-trained">
+                      {n.trainedExercises} trained
+                    </text>
+                  )}
                 </g>
               ))}
             </svg>
           </div>
         )}
 
-        {progress.categoryEffectiveness.length > 0 && progress.totalGames >= 2 && (
+        {progress.categoryEffectiveness.length > 0 && (
           <div className="effectiveness-table-wrap">
-            <div className="muted small" style={{ marginBottom: 6, fontWeight: 600 }}>
-              Theme-by-theme training vs. mistake rate (earlier vs. recent games)
+            <div className="muted small" style={{ marginBottom: 8, fontWeight: 600 }}>
+              Theme-by-theme training progress &amp; impact on subsequent games
             </div>
             <div className="effectiveness-rows">
-              {progress.categoryEffectiveness.slice(0, 4).map(ce => (
+              {progress.categoryEffectiveness.map(ce => (
                 <div key={ce.category} className="effectiveness-row">
-                  <span className="effectiveness-cat" style={{ color: ce.color }}>
-                    {ce.label}
-                  </span>
-                  <span className="muted small">
-                    {ce.trainedPositions}/{ce.totalPositions} trained ({ce.trainedPct}%)
-                  </span>
-                  <span className="effectiveness-trend small">
-                    {ce.priorPerGame}/g → <strong>{ce.recentPerGame}/g</strong>{' '}
-                    {ce.deltaPerGame < 0 ? (
-                      <span className="good">({ce.deltaPerGame}/g)</span>
-                    ) : ce.deltaPerGame > 0 ? (
-                      <span className="bad">(+{ce.deltaPerGame}/g)</span>
-                    ) : (
-                      <span className="muted">(0.0/g)</span>
+                  <div className="effectiveness-header">
+                    <span className="effectiveness-cat" style={{ color: ce.color }}>
+                      {ce.icon} {ce.label}
+                    </span>
+                    {ce.status === 'improved' && (
+                      <span className="impact-pill good">
+                        ▼ {Math.abs(ce.deltaPct ?? 0)}% fewer mistakes/game
+                      </span>
                     )}
-                  </span>
+                    {ce.status === 'regressed' && (
+                      <span className="impact-pill bad">
+                        ▲ +{ce.deltaPerGame} mistakes/game
+                      </span>
+                    )}
+                    {ce.status === 'steady' && (
+                      <span className="impact-pill muted">No change in rate yet</span>
+                    )}
+                    {ce.status === 'awaiting-games' && (
+                      <span className="impact-pill info">Play new games to measure impact</span>
+                    )}
+                    {ce.status === 'untrained' && (
+                      <button
+                        className="small-btn"
+                        onClick={() => startTraining([ce.category], undefined, undefined, true)}
+                      >
+                        Train theme →
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="effectiveness-bar-row">
+                    <div className="bar">
+                      <div
+                        className="bar-fill"
+                        style={{ width: `${ce.trainedPct}%`, backgroundColor: ce.color }}
+                      />
+                    </div>
+                    <span className="muted small">
+                      {ce.trainedPositions} of {ce.totalPositions} trained ({ce.masteredPositions} solved)
+                    </span>
+                  </div>
+
+                  <div className="effectiveness-detail small muted">
+                    {ce.afterTrainingPerGame !== null ? (
+                      <>
+                        Before training ({ce.gamesBeforeTraining}{' '}
+                        {ce.gamesBeforeTraining === 1 ? 'game' : 'games'}):{' '}
+                        <strong>{ce.beforeTrainingPerGame} mistakes/game</strong> → After training (
+                        {ce.gamesAfterTraining} {ce.gamesAfterTraining === 1 ? 'game' : 'games'}):{' '}
+                        <strong className={ce.deltaPerGame && ce.deltaPerGame < 0 ? 'good' : undefined}>
+                          {ce.afterTrainingPerGame} mistakes/game
+                        </strong>
+                      </>
+                    ) : ce.trainedPositions > 0 ? (
+                      <>
+                        Pre-training baseline: <strong>{ce.beforeTrainingPerGame} mistakes per game</strong> across{' '}
+                        {ce.gamesBeforeTraining} {ce.gamesBeforeTraining === 1 ? 'game' : 'games'}
+                      </>
+                    ) : (
+                      <>
+                        Current frequency: <strong>{ce.overallPerGame} mistakes per game</strong> (not trained yet)
+                      </>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

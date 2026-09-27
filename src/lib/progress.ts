@@ -4,40 +4,50 @@ import { posKeyOf } from './training';
 
 export interface WeeklyBucket {
   weekStart: string; // ISO YYYY-MM-DD (Monday)
-  label: string; // e.g. "Jan 5"
-  games: number;
-  avgAccuracy: number; // 0-100, 1 decimal
+  label: string; // e.g. "Sep 21"
+  games: number; // number of analyzed games played in this week
+  avgAccuracy: number | null; // 0-100 (1 decimal), or null if no games played this week
   mistakes: number;
   playerMoves: number;
-  mistakesPerGame: number; // 1 decimal
-  mistakesPer40: number; // mistakes per 40 player moves, 1 decimal
-  cleanMovePct: number; // % of player moves without errors/blunders, 1 decimal
-  trainedExercises: number; // exercises drilled during this week (or from this week's games)
+  mistakesPerGame: number | null; // 1 decimal, or null if no games played this week
+  mistakesPer40: number | null; // mistakes per 40 player moves (1 decimal), or null if no games
+  cleanMovePct: number | null; // % of player moves without errors/blunders
+  trainedExercises: number; // exercises actually trained during this week (from TrainingStats.lastAt)
+  solvedExercises: number; // exercises trained during this week whose lastResult === 'correct'
 }
+
+export type ThemeImpactStatus = 'improved' | 'regressed' | 'steady' | 'awaiting-games' | 'untrained';
 
 export interface CategoryEffectiveness {
   category: Category;
+  icon: string;
   label: string;
   color: string;
   totalPositions: number;
   trainedPositions: number;
   trainedPct: number;
   masteredPositions: number;
-  priorPerGame: number;
-  recentPerGame: number;
-  deltaPerGame: number; // negative means fewer mistakes per game (improvement)
+  overallPerGame: number;
+  beforeTrainingPerGame: number;
+  afterTrainingPerGame: number | null; // null if no games have been played since training this theme
+  gamesBeforeTraining: number;
+  gamesAfterTraining: number;
+  deltaPerGame: number | null; // after - before (negative = fewer mistakes = improvement)
+  deltaPct: number | null; // % change after training (negative = fewer mistakes)
+  status: ThemeImpactStatus;
 }
 
 export interface ChartNode {
   key: string;
   label: string;
-  sublabel: string;
-  avgAccuracy: number;
-  mistakesPer40: number;
+  gamesCount: number;
+  avgAccuracy: number | null;
+  mistakesPer40: number | null;
+  mistakesPerGame: number | null;
   trainedExercises: number;
   x: number;
-  accY: number;
-  errY: number;
+  accY: number | null;
+  errY: number | null;
   barX: number;
   barY: number;
   barW: number;
@@ -79,7 +89,7 @@ export interface ProgressReport {
   totalUniqueMistakes: number;
   trainedUniqueMistakes: number;
   masteredUniqueMistakes: number;
-  drilledCategoryDeltaPct: number | null; // % change in mistake rate for categories the player has trained
+  drilledCategoryDeltaPct: number | null; // % change in post-training games for drilled categories
   categoryEffectiveness: CategoryEffectiveness[];
 }
 
@@ -101,6 +111,12 @@ export function parseGameTimestamp(playedAt: string | undefined, fallbackMs: num
   return fallbackMs || 0;
 }
 
+/** Return the UTC day start (00:00:00.000 UTC) for a timestamp in ms. */
+function utcDayStart(tsMs: number): number {
+  const d = new Date(tsMs);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
 /** Return the ISO date string ("YYYY-MM-DD") for the Monday starting the UTC week of `tsMs`. */
 export function weekStartIso(tsMs: number): string {
   const d = new Date(tsMs);
@@ -110,7 +126,7 @@ export function weekStartIso(tsMs: number): string {
   return mon.toISOString().slice(0, 10);
 }
 
-/** Format "YYYY-MM-DD" into a compact chart label like "Jan 5". */
+/** Format "YYYY-MM-DD" into a compact chart label like "Sep 21". */
 export function formatWeekLabel(isoDate: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
   if (!m) return isoDate;
@@ -127,16 +143,17 @@ interface EnrichedGame {
   analysis: GameAnalysis;
   game?: GameRecord;
   ts: number;
+  dayStart: number;
   weekStart: string;
   playerMoves: number;
   mistakes: number;
   byCategory: Map<Category, number>;
-  trainedInGame: number;
 }
 
 /**
  * Compute week-over-week player progress and training effectiveness metrics.
- * Pure calculation module — keeps all business logic out of presentational UI.
+ * Training activity is grouped strictly by the week the user actually trained
+ * (`trainingStats[posKey].lastAt`), never by the week the game was played.
  */
 export function computeProgressReport(
   analyses: Record<string, GameAnalysis>,
@@ -145,15 +162,16 @@ export function computeProgressReport(
   dismissed: Record<string, unknown> = {}
 ): ProgressReport {
   const enriched: EnrichedGame[] = [];
-  const uniquePositions = new Map<string, Category>();
+  // Track unique mistake positions and the latest game timestamp where each occurred
+  const uniquePositions = new Map<string, { category: Category; earliestGameDay: number }>();
 
   for (const a of Object.values(analyses)) {
     const g = games[a.gameKey];
     const ts = parseGameTimestamp(g?.playedAt, a.createdAt);
+    const dayStart = utcDayStart(ts);
     const weekStart = weekStartIso(ts);
     let playerMoves = 0;
     let mistakes = 0;
-    let trainedInGame = 0;
     const byCategory = new Map<Category, number>();
 
     for (const p of a.plies) {
@@ -165,11 +183,11 @@ export function computeProgressReport(
       if (dismissed[posKey]) continue;
       mistakes++;
       byCategory.set(p.category, (byCategory.get(p.category) ?? 0) + 1);
-      if (!uniquePositions.has(posKey)) {
-        uniquePositions.set(posKey, p.category);
-      }
-      if ((trainingStats[posKey]?.attempts ?? 0) > 0) {
-        trainedInGame++;
+      const existing = uniquePositions.get(posKey);
+      if (!existing) {
+        uniquePositions.set(posKey, { category: p.category, earliestGameDay: dayStart });
+      } else if (dayStart < existing.earliestGameDay) {
+        existing.earliestGameDay = dayStart;
       }
     }
 
@@ -177,24 +195,27 @@ export function computeProgressReport(
       analysis: a,
       game: g,
       ts,
+      dayStart,
       weekStart,
       playerMoves: Math.max(1, playerMoves),
       mistakes,
       byCategory,
-      trainedInGame,
     });
   }
 
   enriched.sort((a, b) => a.ts - b.ts || a.analysis.gameKey.localeCompare(b.analysis.gameKey));
 
-  // Count exercises drilled per week by trainingStats.lastAt when available
-  const drillsByWeek = new Map<string, number>();
+  // Count exercises trained per week strictly by when the user trained them (`st.lastAt`).
+  const drillsByWeek = new Map<string, { trained: number; solved: number }>();
   for (const [posKey, st] of Object.entries(trainingStats)) {
     if (dismissed[posKey] || (st?.attempts ?? 0) <= 0) continue;
-    if (st.lastAt) {
-      const wk = weekStartIso(st.lastAt);
-      drillsByWeek.set(wk, (drillsByWeek.get(wk) ?? 0) + 1);
-    }
+    // Only count positions that belong to the current mistake map (or all trained positions with a timestamp)
+    if (!st.lastAt) continue;
+    const wk = weekStartIso(st.lastAt);
+    const prev = drillsByWeek.get(wk) ?? { trained: 0, solved: 0 };
+    prev.trained += 1;
+    if (st.lastResult === 'correct') prev.solved += 1;
+    drillsByWeek.set(wk, prev);
   }
 
   // Group enriched games by ISO week
@@ -205,39 +226,58 @@ export function computeProgressReport(
     weekGroups.set(eg.weekStart, list);
   }
 
-  const weeks: WeeklyBucket[] = [...weekGroups.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([weekStart, list]) => {
-      const gamesCount = list.length;
-      const accSum = list.reduce((s, x) => s + x.analysis.accuracy, 0);
-      const mistakes = list.reduce((s, x) => s + x.mistakes, 0);
-      const playerMoves = list.reduce((s, x) => s + x.playerMoves, 0);
-      const trainedFromGames = list.reduce((s, x) => s + x.trainedInGame, 0);
-      const trainedByTimestamp = drillsByWeek.get(weekStart) ?? 0;
-      const mistakesPer40 = playerMoves > 0 ? round1((mistakes / playerMoves) * 40) : 0;
-      const cleanMovePct = playerMoves > 0 ? round1(Math.max(0, 100 - (mistakes / playerMoves) * 100)) : 100;
+  // Union of all weeks where games were played OR exercises were trained
+  const allWeekKeys = new Set<string>([...weekGroups.keys(), ...drillsByWeek.keys()]);
+  const sortedWeekKeys = [...allWeekKeys].sort((a, b) => a.localeCompare(b));
+
+  const weeks: WeeklyBucket[] = sortedWeekKeys.map(weekStart => {
+    const list = weekGroups.get(weekStart) ?? [];
+    const drills = drillsByWeek.get(weekStart) ?? { trained: 0, solved: 0 };
+    const gamesCount = list.length;
+    if (gamesCount === 0) {
       return {
         weekStart,
         label: formatWeekLabel(weekStart),
-        games: gamesCount,
-        avgAccuracy: round1(accSum / gamesCount),
-        mistakes,
-        playerMoves,
-        mistakesPerGame: round1(mistakes / gamesCount),
-        mistakesPer40,
-        cleanMovePct,
-        trainedExercises: Math.max(trainedFromGames, trainedByTimestamp),
+        games: 0,
+        avgAccuracy: null,
+        mistakes: 0,
+        playerMoves: 0,
+        mistakesPerGame: null,
+        mistakesPer40: null,
+        cleanMovePct: null,
+        trainedExercises: drills.trained,
+        solvedExercises: drills.solved,
       };
-    });
+    }
+    const accSum = list.reduce((s, x) => s + x.analysis.accuracy, 0);
+    const mistakes = list.reduce((s, x) => s + x.mistakes, 0);
+    const playerMoves = list.reduce((s, x) => s + x.playerMoves, 0);
+    const mistakesPer40 = playerMoves > 0 ? round1((mistakes / playerMoves) * 40) : 0;
+    const cleanMovePct = playerMoves > 0 ? round1(Math.max(0, 100 - (mistakes / playerMoves) * 100)) : 100;
+    return {
+      weekStart,
+      label: formatWeekLabel(weekStart),
+      games: gamesCount,
+      avgAccuracy: round1(accSum / gamesCount),
+      mistakes,
+      playerMoves,
+      mistakesPerGame: round1(mistakes / gamesCount),
+      mistakesPer40,
+      cleanMovePct,
+      trainedExercises: drills.trained,
+      solvedExercises: drills.solved,
+    };
+  });
 
-  // Unique mistake training stats
+  // Unique mistake training stats and earliest training date per category
   let trainedUniqueMistakes = 0;
   let masteredUniqueMistakes = 0;
   const catPosTotal = new Map<Category, number>();
   const catPosTrained = new Map<Category, number>();
   const catPosMastered = new Map<Category, number>();
+  const catEarliestTrainedDay = new Map<Category, number>();
 
-  for (const [posKey, cat] of uniquePositions.entries()) {
+  for (const [posKey, { category: cat }] of uniquePositions.entries()) {
     catPosTotal.set(cat, (catPosTotal.get(cat) ?? 0) + 1);
     const st = trainingStats[posKey];
     if (st && st.attempts > 0) {
@@ -246,6 +286,13 @@ export function computeProgressReport(
       if (st.lastResult === 'correct') {
         masteredUniqueMistakes++;
         catPosMastered.set(cat, (catPosMastered.get(cat) ?? 0) + 1);
+      }
+      if (st.lastAt) {
+        const trainDay = utcDayStart(st.lastAt);
+        const prevMin = catEarliestTrainedDay.get(cat);
+        if (prevMin === undefined || trainDay < prevMin) {
+          catEarliestTrainedDay.set(cat, trainDay);
+        }
       }
     }
   }
@@ -259,15 +306,14 @@ export function computeProgressReport(
   const cleanGames = enriched.filter(g => g.mistakes <= 1).length;
   const cleanGamePct = enriched.length > 0 ? Math.round((cleanGames / enriched.length) * 100) : 0;
 
-  // Split into prior (baseline) vs recent window:
-  // If >= 2 weeks exist, compare the most recent half of weeks (or latest week when 2-3 weeks) against earlier weeks.
-  // If all games are in 1 week, split the chronological games in half so trend comparison still works.
+  // Split games into prior (earlier weeks) vs recent (latest week(s) with games)
+  const gameWeeks = weeks.filter(w => w.games > 0);
   let priorGames: EnrichedGame[] = [];
   let recentGames: EnrichedGame[] = [];
 
-  if (weeks.length >= 2) {
-    const splitWeekIdx = weeks.length >= 4 ? Math.floor(weeks.length / 2) : weeks.length - 1;
-    const recentWeekSet = new Set(weeks.slice(splitWeekIdx).map(w => w.weekStart));
+  if (gameWeeks.length >= 2) {
+    const splitWeekIdx = gameWeeks.length >= 4 ? Math.floor(gameWeeks.length / 2) : gameWeeks.length - 1;
+    const recentWeekSet = new Set(gameWeeks.slice(splitWeekIdx).map(w => w.weekStart));
     priorGames = enriched.filter(g => !recentWeekSet.has(g.weekStart));
     recentGames = enriched.filter(g => recentWeekSet.has(g.weekStart));
   } else if (enriched.length >= 2) {
@@ -303,11 +349,12 @@ export function computeProgressReport(
   const priorMistakesPerGame = mistakesPerGameOf(priorGames);
   const recentMistakesPerGame = mistakesPerGameOf(recentGames);
 
-  // Per-category training effectiveness
+  // Per-category training effectiveness:
+  // Compare games played BEFORE the user trained that category vs games played AFTER training it.
   const categoryEffectiveness: CategoryEffectiveness[] = [];
-  let drilledPriorSum = 0;
-  let drilledRecentSum = 0;
-  let hasDrilledCategory = false;
+  let drilledBeforeSum = 0;
+  let drilledAfterSum = 0;
+  let hasMeasuredDrilledCategory = false;
 
   for (const cat of CATEGORY_ORDER) {
     const totalPos = catPosTotal.get(cat) ?? 0;
@@ -316,37 +363,79 @@ export function computeProgressReport(
     const masteredPos = catPosMastered.get(cat) ?? 0;
     const trainedPct = Math.round((trainedPos / totalPos) * 100);
 
-    const priorCount = priorGames.reduce((s, g) => s + (g.byCategory.get(cat) ?? 0), 0);
-    const recentCount = recentGames.reduce((s, g) => s + (g.byCategory.get(cat) ?? 0), 0);
-    const priorRate = priorGames.length > 0 ? round1(priorCount / priorGames.length) : 0;
-    const recentRate = recentGames.length > 0 ? round1(recentCount / recentGames.length) : 0;
-    const deltaRate = round1(recentRate - priorRate);
+    const totalCatMistakes = enriched.reduce((s, g) => s + (g.byCategory.get(cat) ?? 0), 0);
+    const overallPerGame = enriched.length > 0 ? round1(totalCatMistakes / enriched.length) : 0;
 
-    if (trainedPos > 0) {
-      hasDrilledCategory = true;
-      drilledPriorSum += priorRate;
-      drilledRecentSum += recentRate;
+    const earliestTrainDay = catEarliestTrainedDay.get(cat);
+    let beforeList = enriched;
+    let afterList: EnrichedGame[] = [];
+
+    if (trainedPos > 0 && earliestTrainDay !== undefined) {
+      // Games played strictly after the day training began (or if games were played on a later date)
+      // count as post-training games; games on or before the training day are pre-training baseline.
+      const strictlyAfter = enriched.filter(g => g.dayStart > earliestTrainDay);
+      const onOrBefore = enriched.filter(g => g.dayStart <= earliestTrainDay);
+      if (strictlyAfter.length > 0 && onOrBefore.length > 0) {
+        beforeList = onOrBefore;
+        afterList = strictlyAfter;
+      } else {
+        // All games were played on or before the day the user trained -> no post-training games yet
+        beforeList = enriched;
+        afterList = [];
+      }
+    }
+
+    const beforeCount = beforeList.reduce((s, g) => s + (g.byCategory.get(cat) ?? 0), 0);
+    const beforePerGame = beforeList.length > 0 ? round1(beforeCount / beforeList.length) : overallPerGame;
+
+    let afterPerGame: number | null = null;
+    let deltaPerGame: number | null = null;
+    let deltaPct: number | null = null;
+    let status: ThemeImpactStatus = 'untrained';
+
+    if (trainedPos === 0) {
+      status = 'untrained';
+    } else if (afterList.length === 0) {
+      status = 'awaiting-games';
+    } else {
+      const afterCount = afterList.reduce((s, g) => s + (g.byCategory.get(cat) ?? 0), 0);
+      afterPerGame = round1(afterCount / afterList.length);
+      deltaPerGame = round1(afterPerGame - beforePerGame);
+      deltaPct = beforePerGame > 0 ? Math.round(((afterPerGame - beforePerGame) / beforePerGame) * 100) : 0;
+      if (deltaPerGame <= -0.1) status = 'improved';
+      else if (deltaPerGame >= 0.1) status = 'regressed';
+      else status = 'steady';
+
+      hasMeasuredDrilledCategory = true;
+      drilledBeforeSum += beforePerGame;
+      drilledAfterSum += afterPerGame;
     }
 
     categoryEffectiveness.push({
       category: cat,
+      icon: CATEGORY_META[cat].icon,
       label: CATEGORY_META[cat].label,
       color: CATEGORY_META[cat].color,
       totalPositions: totalPos,
       trainedPositions: trainedPos,
       trainedPct,
       masteredPositions: masteredPos,
-      priorPerGame: priorRate,
-      recentPerGame: recentRate,
-      deltaPerGame: deltaRate,
+      overallPerGame,
+      beforeTrainingPerGame: beforePerGame,
+      afterTrainingPerGame: afterPerGame,
+      gamesBeforeTraining: beforeList.length,
+      gamesAfterTraining: afterList.length,
+      deltaPerGame,
+      deltaPct,
+      status,
     });
   }
 
   categoryEffectiveness.sort((a, b) => b.totalPositions - a.totalPositions);
 
   const drilledCategoryDeltaPct =
-    hasDrilledCategory && drilledPriorSum > 0
-      ? Math.round(((drilledRecentSum - drilledPriorSum) / drilledPriorSum) * 100)
+    hasMeasuredDrilledCategory && drilledBeforeSum > 0
+      ? Math.round(((drilledAfterSum - drilledBeforeSum) / drilledBeforeSum) * 100)
       : null;
 
   // Determine overall coaching verdict and headline
@@ -357,7 +446,7 @@ export function computeProgressReport(
   if (enriched.length < 2) {
     verdict = 'insufficient-data';
     headline = 'Analyze at least 2 games to unlock trend tracking';
-    subline = 'Once you have games across multiple sessions or weeks, your accuracy and mistake reduction trends will appear here.';
+    subline = 'Once you have games across multiple weeks, your accuracy and mistake reduction trends will appear here.';
   } else {
     const accImproved = accuracyDelta >= 1.0;
     const mistakesReduced = recentMistakesPer40 < priorMistakesPer40 - 0.15;
@@ -371,9 +460,9 @@ export function computeProgressReport(
       if (mistakesDeltaPct < 0) parts.push(`mistakes per 40 moves dropped ${Math.abs(mistakesDeltaPct)}%`);
       headline = `Improving trend — ${parts.join(' and ')}`;
       if (drilledCategoryDeltaPct !== null && drilledCategoryDeltaPct < 0) {
-        subline = `Training is paying off: mistake frequency in your drilled themes is down ${Math.abs(drilledCategoryDeltaPct)}% (${masteryPct}% mastery across ${trainedUniqueMistakes} trained positions).`;
+        subline = `Training is paying off: in games played after training, mistake frequency in your drilled themes is down ${Math.abs(drilledCategoryDeltaPct)}%.`;
       } else if (trainedUniqueMistakes > 0) {
-        subline = `You've trained ${trainingCoveragePct}% of your mapped mistakes (${masteryPct}% mastered). Keep drilling untrained positions to lock in the gains.`;
+        subline = `You've trained ${trainedUniqueMistakes} of ${totalUniqueMistakes} mistake positions (${masteryPct}% solved). Play and import new games to see how this week's training lowers your mistake rate.`;
       } else {
         subline = `Your game quality is trending upward. Start drilling your mapped mistakes below to accelerate the improvement.`;
       }
@@ -386,46 +475,16 @@ export function computeProgressReport(
           : `Review your most recent games and re-drill the themes that spiked this week.`;
     } else {
       verdict = 'steady';
-      headline = `Holding steady around ${recentAccuracy}% accuracy (${recentMistakesPer40} mistakes / 40 moves)`;
+      headline = `Holding steady around ${recentAccuracy}% accuracy (${recentMistakesPer40} mistakes per 40 moves)`;
       subline =
         trainedUniqueMistakes > 0
-          ? `${trainingCoveragePct}% of mistakes trained (${masteryPct}% mastered). Drill the remaining ${totalUniqueMistakes - trainedUniqueMistakes} untrained positions to break through your plateau.`
+          ? `${trainedUniqueMistakes} of ${totalUniqueMistakes} mistakes trained (${masteryPct}% solved). Play new games after your training sessions to track how your mistake rate responds.`
           : `Train your #1 mistake category below to start pushing your weekly accuracy higher.`;
     }
   }
 
-  let chartBuckets: WeeklyBucket[] = weeks.slice(-10);
-  if (weeks.length === 1 && enriched.length >= 2) {
-    // When all analyzed games fall within a single week, slice into chronological mini-buckets
-    // so the chart still visualizes progression across the week's games.
-    const bucketCount = Math.min(6, enriched.length);
-    const chunkSize = Math.ceil(enriched.length / bucketCount);
-    const intraWeek: WeeklyBucket[] = [];
-    for (let i = 0; i < enriched.length; i += chunkSize) {
-      const slice = enriched.slice(i, i + chunkSize);
-      const gCount = slice.length;
-      const accSum = slice.reduce((s, x) => s + x.analysis.accuracy, 0);
-      const mistakes = slice.reduce((s, x) => s + x.mistakes, 0);
-      const playerMoves = slice.reduce((s, x) => s + x.playerMoves, 0);
-      const trainedFromGames = slice.reduce((s, x) => s + x.trainedInGame, 0);
-      const firstIdx = i + 1;
-      const lastIdx = i + slice.length;
-      const label = firstIdx === lastIdx ? `Game ${firstIdx}` : `Games ${firstIdx}–${lastIdx}`;
-      intraWeek.push({
-        weekStart: `${weeks[0].weekStart}#${firstIdx}`,
-        label,
-        games: gCount,
-        avgAccuracy: round1(accSum / gCount),
-        mistakes,
-        playerMoves,
-        mistakesPerGame: round1(mistakes / gCount),
-        mistakesPer40: playerMoves > 0 ? round1((mistakes / playerMoves) * 40) : 0,
-        cleanMovePct: playerMoves > 0 ? round1(Math.max(0, 100 - (mistakes / playerMoves) * 100)) : 100,
-        trainedExercises: trainedFromGames,
-      });
-    }
-    chartBuckets = intraWeek;
-  }
+  // Always use real calendar weeks for chartBuckets (up to the last 10 active weeks)
+  const chartBuckets: WeeklyBucket[] = weeks.slice(-10);
 
   return {
     weeks,
@@ -455,12 +514,13 @@ export function computeProgressReport(
 
 /**
  * Compute SVG coordinates for the weekly progress & training chart.
+ * Supports weeks with games only, training only, or both.
  */
-export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height = 188): ChartGeometry {
-  const padLeft = 44;
-  const padRight = 36;
-  const padTop = 26;
-  const padBottom = 42;
+export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height = 204): ChartGeometry {
+  const padLeft = 48;
+  const padRight = 48;
+  const padTop = 28;
+  const padBottom = 52;
   const plotWidth = Math.max(1, width - padLeft - padRight);
   const plotHeight = Math.max(1, height - padTop - padBottom);
   const baselineY = padTop + plotHeight;
@@ -481,38 +541,49 @@ export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height 
     };
   }
 
-  // Dynamic accuracy bounds for clear visual separation (clamped within [35, 100])
-  const minAcc = Math.max(35, Math.min(65, Math.floor(Math.min(...buckets.map(b => b.avgAccuracy)) - 8)));
+  const accValues = buckets.map(b => b.avgAccuracy).filter((v): v is number => v !== null);
+  const errValues = buckets.map(b => b.mistakesPer40).filter((v): v is number => v !== null);
+
+  const minAcc =
+    accValues.length > 0 ? Math.max(35, Math.min(65, Math.floor(Math.min(...accValues) - 8))) : 50;
   const maxAcc = 100;
   const accSpan = Math.max(10, maxAcc - minAcc);
 
-  const maxErr = Math.max(4, Math.ceil(Math.max(...buckets.map(b => b.mistakesPer40)) * 1.2));
+  const maxErr = errValues.length > 0 ? Math.max(4, Math.ceil(Math.max(...errValues) * 1.2)) : 5;
   const maxTrained = Math.max(3, ...buckets.map(b => b.trainedExercises));
 
-  const barW = Math.min(34, Math.max(14, Math.floor(plotWidth / Math.max(2, buckets.length * 2.4))));
+  const barW = Math.min(36, Math.max(16, Math.floor(plotWidth / Math.max(2, buckets.length * 2.4))));
 
   const nodes: ChartNode[] = buckets.map((b, i) => {
     const x =
       buckets.length === 1
         ? padLeft + plotWidth / 2
         : padLeft + (i / (buckets.length - 1)) * plotWidth;
-    const accNorm = Math.max(0, Math.min(1, (b.avgAccuracy - minAcc) / accSpan));
-    const accY = round1(baselineY - accNorm * plotHeight);
 
-    const errNorm = Math.max(0, Math.min(1, b.mistakesPer40 / maxErr));
-    const errY = round1(baselineY - errNorm * (plotHeight * 0.78));
+    let accY: number | null = null;
+    if (b.avgAccuracy !== null) {
+      const accNorm = Math.max(0, Math.min(1, (b.avgAccuracy - minAcc) / accSpan));
+      accY = round1(baselineY - accNorm * plotHeight);
+    }
+
+    let errY: number | null = null;
+    if (b.mistakesPer40 !== null) {
+      const errNorm = Math.max(0, Math.min(1, b.mistakesPer40 / maxErr));
+      errY = round1(baselineY - errNorm * (plotHeight * 0.78));
+    }
 
     const trainNorm = Math.max(0, Math.min(1, b.trainedExercises / maxTrained));
-    const barH = round1(trainNorm * (plotHeight * 0.55));
+    const barH = b.trainedExercises > 0 ? Math.max(8, round1(trainNorm * (plotHeight * 0.6))) : 0;
     const barY = round1(baselineY - barH);
     const barX = round1(x - barW / 2);
 
     return {
       key: b.weekStart,
       label: b.label,
-      sublabel: `${b.games}g`,
+      gamesCount: b.games,
       avgAccuracy: b.avgAccuracy,
       mistakesPer40: b.mistakesPer40,
+      mistakesPerGame: b.mistakesPerGame,
       trainedExercises: b.trainedExercises,
       x: round1(x),
       accY,
@@ -524,8 +595,14 @@ export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height 
     };
   });
 
-  const accuracyPoints = nodes.map(n => `${n.x},${n.accY}`).join(' ');
-  const mistakePoints = nodes.map(n => `${n.x},${n.errY}`).join(' ');
+  const accuracyPoints = nodes
+    .filter(n => n.accY !== null)
+    .map(n => `${n.x},${n.accY}`)
+    .join(' ');
+  const mistakePoints = nodes
+    .filter(n => n.errY !== null)
+    .map(n => `${n.x},${n.errY}`)
+    .join(' ');
 
   return {
     width,
@@ -541,4 +618,3 @@ export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height 
     nodes,
   };
 }
-
