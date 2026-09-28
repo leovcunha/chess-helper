@@ -48,6 +48,8 @@ export interface ChartNode {
   x: number;
   accY: number | null;
   errY: number | null;
+  accLabelY: number | null; // value label sits above the accuracy point
+  errLabelY: number | null; // value label sits on the free side of the mistake point
   barX: number;
   barY: number;
   barW: number;
@@ -516,7 +518,7 @@ export function computeProgressReport(
  * Compute SVG coordinates for the weekly progress & training chart.
  * Supports weeks with games only, training only, or both.
  */
-export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height = 204): ChartGeometry {
+export function buildChartGeometry(buckets: WeeklyBucket[], width = 920, height = 250): ChartGeometry {
   const padLeft = 48;
   const padRight = 48;
   const padTop = 28;
@@ -572,6 +574,17 @@ export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height 
       errY = round1(baselineY - errNorm * (plotHeight * 0.78));
     }
 
+    // Value labels: accuracy above its point; the mistake label goes below its
+    // point unless that collides with the accuracy label (mistake point just
+    // above the accuracy point) or runs past the baseline — then it goes above.
+    const accLabelY = accY !== null ? Math.max(12, round1(accY - 8)) : null;
+    let errLabelY: number | null = null;
+    if (errY !== null) {
+      const below = round1(errY + 13);
+      const collidesWithAcc = accY !== null && errY > accY - 21 && errY < accY - 8;
+      errLabelY = below > baselineY + 6 || collidesWithAcc ? round1(errY - 8) : below;
+    }
+
     const trainNorm = Math.max(0, Math.min(1, b.trainedExercises / maxTrained));
     const barH = b.trainedExercises > 0 ? Math.max(8, round1(trainNorm * (plotHeight * 0.6))) : 0;
     const barY = round1(baselineY - barH);
@@ -588,6 +601,8 @@ export function buildChartGeometry(buckets: WeeklyBucket[], width = 680, height 
       x: round1(x),
       accY,
       errY,
+      accLabelY,
+      errLabelY,
       barX,
       barY,
       barW,

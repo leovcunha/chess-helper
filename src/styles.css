@@ -747,7 +747,7 @@ button.danger {
 .progress-chart-svg {
   width: 100%;
   height: auto;
-  max-height: 220px;
+  max-height: 320px;
   display: block;
 }
 
@@ -760,6 +760,15 @@ button.danger {
 .chart-val-err {
   fill: #f08c90;
   font-size: 9.5px;
+}
+
+/* keep value labels legible where they cross the trend lines */
+.chart-val-acc,
+.chart-val-err {
+  paint-order: stroke fill;
+  stroke: var(--bg-2);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 
 .chart-axis-label {
@@ -786,14 +795,8 @@ button.danger {
 
 .effectiveness-rows {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
   gap: 10px 14px;
-}
-
-@media (max-width: 780px) {
-  .effectiveness-rows {
-    grid-template-columns: 1fr;
-  }
 }
 
 .effectiveness-row {
@@ -827,6 +830,10 @@ button.danger {
 
 .effectiveness-detail {
   line-height: 1.35;
+}
+
+.effectiveness-detail strong {
+  white-space: nowrap;
 }
 
 .impact-pill {

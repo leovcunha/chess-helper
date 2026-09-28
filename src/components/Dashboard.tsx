@@ -7,6 +7,7 @@ import { buildTrainingQueue, posKeyOf } from '../lib/training';
 
 const PHASES: Phase[] = ['opening', 'middlegame', 'endgame'];
 const PHASE_LABEL: Record<Phase, string> = { opening: 'Opening', middlegame: 'Middlegame', endgame: 'Endgame' };
+const positions = (n: number) => `${n} position${n === 1 ? '' : 's'}`;
 
 interface Stats {
   games: number;
@@ -198,7 +199,7 @@ export function Dashboard() {
               )}
             </div>
             <div className="progress-metric-sub muted small">
-              {progress.recentMistakesPerGame} mistakes per game (was {progress.priorMistakesPerGame} per game)
+              {progress.recentMistakesPerGame} mistakes per game (was {progress.priorMistakesPerGame})
             </div>
           </div>
 
@@ -211,7 +212,7 @@ export function Dashboard() {
               </span>
             </div>
             <div className="progress-metric-sub muted small">
-              {progress.masteryPct}% solved ({progress.masteredUniqueMistakes} positions mastered)
+              {progress.masteryPct}% solved ({positions(progress.masteredUniqueMistakes)} mastered)
             </div>
           </div>
 
@@ -319,8 +320,8 @@ export function Dashboard() {
                       <circle cx={n.x} cy={n.errY} r="3.5" fill="#e5484d">
                         <title>{`Week of ${n.label}: ${n.mistakesPer40} mistakes per 40 moves (${n.mistakesPerGame} per game)`}</title>
                       </circle>
-                      <text x={n.x} y={n.errY + 13} textAnchor="middle" className="chart-val-err">
-                        {n.mistakesPer40} err/40m
+                      <text x={n.x} y={n.errLabelY ?? n.errY + 13} textAnchor="middle" className="chart-val-err">
+                        {n.mistakesPer40}
                       </text>
                     </>
                   )}
@@ -330,14 +331,14 @@ export function Dashboard() {
                       <circle cx={n.x} cy={n.accY} r="4" fill="#4ade80" stroke="#14171c" strokeWidth="1.5">
                         <title>{`Week of ${n.label} (${n.gamesCount} games): ${n.avgAccuracy}% avg accuracy`}</title>
                       </circle>
-                      <text x={n.x} y={Math.max(12, n.accY - 8)} textAnchor="middle" className="chart-val-acc">
+                      <text x={n.x} y={n.accLabelY ?? n.accY - 8} textAnchor="middle" className="chart-val-acc">
                         {n.avgAccuracy}%
                       </text>
                     </>
                   )}
 
                   <text x={n.x} y={chart.baselineY + 15} textAnchor="middle" className="chart-axis-label">
-                    Week of {n.label}
+                    {n.label}
                   </text>
                   <text x={n.x} y={chart.baselineY + 28} textAnchor="middle" className="chart-axis-sub">
                     {n.gamesCount === 0
@@ -662,7 +663,7 @@ export function Dashboard() {
                       onClick={() => startTraining(undefined, undefined, undefined, true)}
                       title={`Train only the ${totalUntrained} positions not yet trained`}
                     >
-                      ▶ Train {totalUntrained} untrained positions
+                      ▶ Train {positions(totalUntrained)} untrained
                     </button>
                     <button
                       className="big"
@@ -679,7 +680,7 @@ export function Dashboard() {
                     disabled={queueInfo.items.length === 0}
                     title="Train every mapped mistake position, most common pattern first"
                   >
-                    ▶ Start training session ({queueInfo.items.length} positions)
+                    ▶ Start training session ({positions(queueInfo.items.length)})
                   </button>
                 )}
                 {queueInfo.items.length > 0 && (
